@@ -1,0 +1,397 @@
+package com.project.pooket.ui.features.reader
+
+import android.graphics.Bitmap
+import androidx.compose.animation.*
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.input.pointer.*
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
+
+@Composable
+fun ReaderScreen(
+    bookUri: String,
+    viewModel: ReaderViewModel = hiltViewModel(),
+    isNightMode: Boolean,
+    onBack: () -> Unit,
+    // Add these if your app has a global settings for night light
+    nightLightEnabled: Boolean = false,
+    nightLightWarmth: Float = 0.5f,
+    nightLightDimming: Float = 0f
+) {
+    val scope = rememberCoroutineScope()
+
+    // --- State Observation ---
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val renderer by viewModel.pdfRenderer.collectAsStateWithLifecycle()
+    val totalPages by viewModel.pageCount.collectAsStateWithLifecycle()
+    val isVerticalMode by viewModel.isVerticalScrollMode.collectAsStateWithLifecycle()
+    val isTextMode by viewModel.isTextMode.collectAsStateWithLifecycle()
+    val fontSize by viewModel.fontSize.collectAsStateWithLifecycle()
+    val initialPage by viewModel.initialPage.collectAsStateWithLifecycle()
+
+    // --- UI State ---
+    var showControls by remember { mutableStateOf(true) }
+    val pagerState = rememberPagerState(pageCount = { totalPages })
+    val listState = rememberLazyListState()
+
+    // --- Zoom/Pan State ---
+    var globalScale by remember { mutableFloatStateOf(1f) }
+    var globalOffset by remember { mutableStateOf(Offset.Zero) }
+
+    // 1. Load PDF
+    LaunchedEffect(bookUri) { viewModel.loadPdf(bookUri) }
+
+    // 2. Initial Jump (When first opening)
+    var hasJumped by remember(bookUri) { mutableStateOf(false) }
+    LaunchedEffect(isLoading, totalPages) {
+        if (!isLoading && totalPages > 0 && !hasJumped) {
+            if (isVerticalMode) listState.scrollToItem(initialPage)
+            else pagerState.scrollToPage(initialPage)
+            hasJumped = true
+        }
+    }
+
+    // 3. Mode/Text Sync (Fixes "Reset to Page 1" and "Jumping farther" bugs)
+    LaunchedEffect(isVerticalMode, isTextMode) {
+        if (hasJumped) {
+            globalScale = 1f
+            globalOffset = Offset.Zero
+            val targetIndex = if (isVerticalMode) pagerState.currentPage else listState.firstVisibleItemIndex
+            if (isVerticalMode) listState.scrollToItem(targetIndex)
+            else pagerState.scrollToPage(targetIndex)
+        }
+    }
+
+    // 4. Save Progress logic
+    val currentPage = if (isVerticalMode) listState.firstVisibleItemIndex else pagerState.currentPage
+    LaunchedEffect(currentPage) {
+        if (hasJumped) viewModel.onPageChanged(currentPage)
+    }
+
+    Scaffold(
+        containerColor = if (isNightMode) Color.Black else Color.White,
+        topBar = { ReaderTopBar(showControls, "Pooket Reader", onBack) },
+        bottomBar = {
+            FontSizeControl(visible = showControls && isTextMode, fontSize = fontSize, onFontSizeChange = viewModel::setFontSize)
+        },
+        floatingActionButton = {
+            ReaderControls(
+                visible = showControls,
+                isVertical = isVerticalMode,
+                isTextMode = isTextMode,
+                onToggleMode = viewModel::toggleReadingMode,
+                onToggleTextMode = viewModel::toggleTextMode,
+                onPrevPage = {
+                    scope.launch {
+                        if (isVerticalMode) listState.animateScrollToItem((listState.firstVisibleItemIndex - 1).coerceAtLeast(0))
+                        else pagerState.animateScrollToPage((pagerState.currentPage - 1).coerceAtLeast(0))
+                    }
+                },
+                onNextPage = {
+                    scope.launch {
+                        if (isVerticalMode) listState.animateScrollToItem((listState.firstVisibleItemIndex + 1).coerceAtMost(totalPages - 1))
+                        else pagerState.animateScrollToPage((pagerState.currentPage + 1).coerceAtMost(totalPages - 1))
+                    }
+                }
+            )
+        },
+        floatingActionButtonPosition = FabPosition.Center
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .clipToBounds()
+        ) {
+            if (isLoading || totalPages == 0) {
+                CircularProgressIndicator(Modifier.align(Alignment.Center))
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        // Gesture Input
+                        .pointerInput(isVerticalMode, isTextMode) {
+                            detectTapGestures(
+                                onTap = { showControls = !showControls },
+                                onDoubleTap = {
+                                    if (!isTextMode) {
+                                        globalScale = if (globalScale > 1f) 1f else 2.5f
+                                        globalOffset = Offset.Zero
+                                    }
+                                }
+                            )
+                        }
+                        .pointerInput(isVerticalMode, isTextMode) {
+                            if (isTextMode) return@pointerInput
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false)
+                                do {
+                                    val event = awaitPointerEvent()
+                                    val zoomChange = event.calculateZoom()
+                                    val panChange = event.calculatePan()
+
+                                    if (event.changes.size > 1 || globalScale > 1f) {
+                                        globalScale = (globalScale * zoomChange).coerceIn(1f, 5f)
+
+                                        if (isVerticalMode) {
+                                            // FIX: Vertical scrolling via List state, horizontal via offset
+                                            if (panChange.y != 0f) {
+                                                scope.launch { listState.dispatchRawDelta(-panChange.y / globalScale) }
+                                            }
+                                            val extraWidth = (size.width * (globalScale - 1)) / 2
+                                            val newX = (globalOffset.x + panChange.x).coerceIn(-extraWidth, extraWidth)
+                                            globalOffset = Offset(newX, 0f)
+                                        } else {
+                                            globalOffset += panChange
+                                        }
+                                        event.changes.forEach { it.consume() }
+                                    }
+                                } while (event.changes.any { it.pressed })
+                            }
+                        }
+                        .graphicsLayer {
+                            scaleX = if (isTextMode) 1f else globalScale
+                            scaleY = if (isTextMode) 1f else globalScale
+                            translationX = if (isTextMode) 0f else globalOffset.x
+                            translationY = if (isVerticalMode || isTextMode) 0f else globalOffset.y
+                        }
+                ) {
+                    if (isVerticalMode) {
+                        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                            items(totalPages) { index ->
+                                PdfPageItem(index, viewModel, true, isNightMode, isTextMode, fontSize)
+                            }
+                        }
+                    } else {
+                        HorizontalPager(
+                            state = pagerState,
+                            userScrollEnabled = !isTextMode && globalScale <= 1f
+                        ) { index ->
+                            PdfPageItem(index, viewModel, false, isNightMode, isTextMode, fontSize)
+                        }
+                    }
+                }
+
+                // Page Indicator
+                if (showControls) {
+                    PageIndicator(
+                        currentPage = currentPage + 1,
+                        totalPages = totalPages,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = if (isTextMode) 180.dp else 100.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PdfPageItem(
+    pageIndex: Int,
+    viewModel: ReaderViewModel,
+    isVerticalMode: Boolean,
+    isNightMode: Boolean,
+    isTextMode: Boolean,
+    fontSize: Float
+) {
+    var bitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var textContent by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(pageIndex, isTextMode) {
+        if (isTextMode) {
+            if (textContent == null) textContent = viewModel.extractText(pageIndex)
+        } else {
+            if (bitmap == null) bitmap = viewModel.renderPage(pageIndex)
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (isVerticalMode) Modifier.wrapContentHeight() else Modifier.fillMaxSize())
+            .background(if (isNightMode) Color.Black else Color.White),
+        contentAlignment = Alignment.TopStart
+    ) {
+        if (isTextMode) {
+            SelectionContainer {
+                Text(
+                    text = textContent ?: "Extracting text...",
+                    fontSize = fontSize.sp,
+                    lineHeight = (fontSize * 1.5f).sp,
+                    color = if (isNightMode) Color.LightGray else Color.Black,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp)
+                        // FIX: Added scroll for horizontal overflow
+                        .then(if (!isVerticalMode) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+                )
+            }
+        } else {
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap!!.asImageBitmap(),
+                    contentDescription = null,
+                    contentScale = if (isVerticalMode) ContentScale.FillWidth else ContentScale.Fit,
+                    modifier = Modifier.fillMaxWidth(),
+                    colorFilter = if (isNightMode) ColorFilter.colorMatrix(ColorMatrix(floatArrayOf(
+                        -1f, 0f, 0f, 0f, 255f,
+                        0f, -1f, 0f, 0f, 255f,
+                        0f, 0f, -1f, 0f, 255f,
+                        0f, 0f, 0f, 1f, 0f
+                    ))) else null
+                )
+            } else {
+                Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(30.dp), strokeWidth = 2.dp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ReaderControls(
+    visible: Boolean,
+    isVertical: Boolean,
+    isTextMode: Boolean,
+    onToggleMode: () -> Unit,
+    onToggleTextMode: () -> Unit,
+    onPrevPage: () -> Unit,
+    onNextPage: () -> Unit
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn() + slideInVertically { it / 2 },
+        exit = fadeOut() + slideOutVertically { it / 2 }
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 32.dp, start = 20.dp, end = 20.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SmallFloatingActionButton(onClick = onPrevPage, containerColor = MaterialTheme.colorScheme.surface) {
+                Icon(Icons.Default.ChevronLeft, "Prev")
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                FloatingActionButton(onClick = onToggleMode) {
+                    Icon(if (isVertical) Icons.Default.SwapVert else Icons.Default.ViewCarousel, "Mode")
+                }
+                FloatingActionButton(
+                    onClick = onToggleTextMode,
+                    containerColor = if (isTextMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Icon(if (isTextMode) Icons.Default.Image else Icons.Default.TextFields, "Text Mode")
+                }
+            }
+
+            SmallFloatingActionButton(onClick = onNextPage, containerColor = MaterialTheme.colorScheme.surface) {
+                Icon(Icons.Default.ChevronRight, "Next")
+            }
+        }
+    }
+}
+
+@Composable
+fun FontSizeControl(visible: Boolean, fontSize: Float, onFontSizeChange: (Float) -> Unit) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = slideInVertically { it },
+        exit = slideOutVertically { it }
+    ) {
+        Surface(
+            tonalElevation = 8.dp,
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+        ) {
+            Column(Modifier.padding(20.dp)) {
+                Text("Font Size: ${fontSize.toInt()}sp", style = MaterialTheme.typography.labelMedium)
+                Slider(
+                    value = fontSize,
+                    onValueChange = onFontSizeChange,
+                    valueRange = 12f..40f
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ReaderTopBar(visible: Boolean, title: String, onBack: () -> Unit) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = slideInVertically { -it },
+        exit = slideOutVertically { -it }
+    ) {
+        TopAppBar(
+            title = { Text(title, style = MaterialTheme.typography.titleMedium) },
+            navigationIcon = {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun PageIndicator(currentPage: Int, totalPages: Int, modifier: Modifier = Modifier) {
+    Surface(
+        color = Color.Black.copy(alpha = 0.7f),
+        shape = RoundedCornerShape(20.dp),
+        modifier = modifier
+    ) {
+        Text(
+            text = "$currentPage / $totalPages",
+            color = Color.White,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            style = MaterialTheme.typography.labelMedium
+        )
+    }
+}
+
+@Composable
+fun NightLightOverlay(isEnabled: Boolean, warmth: Float, dimming: Float) {
+    if (!isEnabled) return
+    val warmthColor = lerp(Color(0xFFFFF9E5).copy(alpha = 0f), Color(0xFFFF8F00).copy(alpha = 0.35f), warmth)
+    Box(Modifier.fillMaxSize().background(warmthColor)) {
+        if (dimming > 0f) {
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = dimming * 0.7f)))
+        }
+    }
+}
