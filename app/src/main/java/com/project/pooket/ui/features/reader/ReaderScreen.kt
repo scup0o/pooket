@@ -192,7 +192,7 @@ fun ReaderScreen(
                         LazyColumn(
                             state = listState,
                             modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(bottom = 100.dp)
+//                            contentPadding = PaddingValues(bottom = 100.dp)
                         ) {
                             items(
                                 count = totalPages,
