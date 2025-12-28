@@ -23,8 +23,6 @@ class LibraryMainViewModel @Inject constructor(
         SharingStarted.WhileSubscribed(5000),
         emptyList()
     )
-
-    // 2. Continue Reading Section
     val recentBook = bookRepository.recentBook.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000),
@@ -32,9 +30,8 @@ class LibraryMainViewModel @Inject constructor(
     )
 
     init {
-        // 3. Auto-Scan on Load
         viewModelScope.launch {
-            bookRepository.refreshAllLibrary()
+            if (books.value.isEmpty()) bookRepository.refreshAllLibrary()
         }
     }
 

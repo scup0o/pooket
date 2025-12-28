@@ -1,7 +1,6 @@
 package com.project.pooket.ui.features.reader
 
 import android.graphics.Bitmap
-import android.util.Log
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -29,7 +28,6 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
@@ -37,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+
 @Composable
 fun ReaderScreen(
     bookUri: String,
@@ -46,7 +45,7 @@ fun ReaderScreen(
 ) {
     val scope = rememberCoroutineScope()
 
-    // --- State Observation (ViewModel) ---
+    //viewmodel state
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val totalPages by viewModel.pageCount.collectAsStateWithLifecycle()
     val isVerticalMode by viewModel.isVerticalScrollMode.collectAsStateWithLifecycle()
@@ -54,16 +53,23 @@ fun ReaderScreen(
     val fontSize by viewModel.fontSize.collectAsStateWithLifecycle()
     val initialPage by viewModel.initialPage.collectAsStateWithLifecycle()
 
-    // --- The Master State (The single source of truth for the page) ---
+    //ui-state
     var masterPage by remember { mutableIntStateOf(0) }
     var isInitialized by remember { mutableStateOf(false) }
     var isSwitchingModes by remember { mutableStateOf(false) }
 
-    // --- The Puppet States (UI Components) ---
     val pagerState = rememberPagerState(pageCount = { totalPages })
     val listState = rememberLazyListState()
+    val activeUiPage = remember(isVerticalMode) {
+        derivedStateOf { if (isVerticalMode) listState.firstVisibleItemIndex else pagerState.currentPage }
+    }
 
-    // 1. Initial Load: Set Master from Database
+    //ui-controller
+    var showControls by remember { mutableStateOf(true) }
+
+    var globalScale by remember { mutableFloatStateOf(1f) }
+    var globalOffset by remember { mutableStateOf(Offset.Zero) }
+
     LaunchedEffect(bookUri) { viewModel.loadPdf(bookUri) }
 
     LaunchedEffect(isLoading, totalPages) {
@@ -75,39 +81,23 @@ fun ReaderScreen(
         }
     }
 
-    // 2. Logic: Mode Switcher (When mode changes, force UI to Master)
-    // We use isSwitchingModes to "lock" the listener so the UI doesn't
-    // accidentally set the masterPage back to 0 during recomposition.
     LaunchedEffect(isVerticalMode, isTextMode) {
         if (isInitialized) {
             isSwitchingModes = true
-
             if (isVerticalMode) listState.scrollToItem(masterPage)
             else pagerState.scrollToPage(masterPage)
-
             isSwitchingModes = false
         }
-    }
-
-    // 3. Logic: Update Master when User Scrolls
-    val activeUiPage = remember(isVerticalMode) {
-        derivedStateOf { if (isVerticalMode) listState.firstVisibleItemIndex else pagerState.currentPage }
     }
 
     LaunchedEffect(activeUiPage.value) {
         if (isInitialized && !isSwitchingModes) {
             if (masterPage != activeUiPage.value) {
                 masterPage = activeUiPage.value
-                Log.i("Reader", "Master Page updated to: $masterPage")
                 viewModel.onPageChanged(masterPage)
             }
         }
     }
-
-    // --- UI Controls State ---
-    var showControls by remember { mutableStateOf(true) }
-    var globalScale by remember { mutableFloatStateOf(1f) }
-    var globalOffset by remember { mutableStateOf(Offset.Zero) }
 
     Scaffold(
         containerColor = if (isNightMode) Color.Black else Color.White,
@@ -191,22 +181,31 @@ fun ReaderScreen(
                             }
                         }
                         .graphicsLayer {
-                            scaleX = if (isTextMode) 1f else globalScale
-                            scaleY = if (isTextMode) 1f else globalScale
+                            val scale = if (isTextMode) 1f else globalScale
+                            scaleX = scale
+                            scaleY = scale
                             translationX = if (isTextMode) 0f else globalOffset.x
                             translationY = if (isVerticalMode || isTextMode) 0f else globalOffset.y
                         }
                 ) {
                     if (isVerticalMode) {
-                        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                            items(totalPages) { index ->
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(bottom = 100.dp)
+                        ) {
+                            items(
+                                count = totalPages,
+                                key = { it }
+                            ) { index ->
                                 PdfPageItem(index, viewModel, true, isNightMode, isTextMode, fontSize)
                             }
                         }
                     } else {
                         HorizontalPager(
                             state = pagerState,
-                            userScrollEnabled = !isTextMode && globalScale <= 1f
+                            userScrollEnabled = !isTextMode && globalScale <= 1f,
+                            beyondViewportPageCount = 1
                         ) { index ->
                             PdfPageItem(index, viewModel, false, isNightMode, isTextMode, fontSize)
                         }
@@ -215,7 +214,7 @@ fun ReaderScreen(
 
                 if (showControls) {
                     PageIndicator(
-                        currentPage = masterPage + 1, // Display master page
+                        currentPage = masterPage + 1,
                         totalPages = totalPages,
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
@@ -241,10 +240,11 @@ fun PdfPageItem(
 
     LaunchedEffect(pageIndex, isTextMode) {
         if (isTextMode) {
-            Log.i("reader", "extract page: $pageIndex")
             if (textContent == null) textContent = viewModel.extractText(pageIndex)
         } else {
-            if (bitmap == null) bitmap = viewModel.renderPage(pageIndex)
+            if (bitmap == null) {
+                bitmap = viewModel.renderPage(pageIndex)
+            }
         }
     }
 
@@ -265,14 +265,14 @@ fun PdfPageItem(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(24.dp)
-                        // FIX: Added scroll for horizontal overflow
                         .then(if (!isVerticalMode) Modifier.verticalScroll(rememberScrollState()) else Modifier)
                 )
             }
         } else {
-            if (bitmap != null) {
+            val currentBitmap = bitmap
+            if (currentBitmap != null) {
                 Image(
-                    bitmap = bitmap!!.asImageBitmap(),
+                    bitmap = currentBitmap.asImageBitmap(),
                     contentDescription = null,
                     contentScale = if (isVerticalMode) ContentScale.FillWidth else ContentScale.Fit,
                     modifier = Modifier.fillMaxWidth(),
@@ -284,7 +284,7 @@ fun PdfPageItem(
                     ))) else null
                 )
             } else {
-                Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxWidth().height(450.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(Modifier.size(30.dp), strokeWidth = 2.dp)
                 }
             }
@@ -393,16 +393,5 @@ fun PageIndicator(currentPage: Int, totalPages: Int, modifier: Modifier = Modifi
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
             style = MaterialTheme.typography.labelMedium
         )
-    }
-}
-
-@Composable
-fun NightLightOverlay(isEnabled: Boolean, warmth: Float, dimming: Float) {
-    if (!isEnabled) return
-    val warmthColor = lerp(Color(0xFFFFF9E5).copy(alpha = 0f), Color(0xFFFF8F00).copy(alpha = 0.35f), warmth)
-    Box(Modifier.fillMaxSize().background(warmthColor)) {
-        if (dimming > 0f) {
-            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = dimming * 0.7f)))
-        }
     }
 }

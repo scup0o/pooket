@@ -25,12 +25,10 @@ class LibraryPreferences @Inject constructor(
         val SCANNED_FOLDERS = stringSetPreferencesKey("scanned_folders")
     }
 
-    // 1. Get saved folders
     val scannedFolders: Flow<Set<String>> = dataStore.data
         .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
         .map { it[Keys.SCANNED_FOLDERS] ?: emptySet() }
 
-    // 2. Add a folder to the list
     suspend fun addFolder(uriString: String) {
         dataStore.edit { prefs ->
             val current = prefs[Keys.SCANNED_FOLDERS] ?: emptySet()

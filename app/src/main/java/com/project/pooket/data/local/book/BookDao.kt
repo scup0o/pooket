@@ -1,6 +1,7 @@
 package com.project.pooket.data.local.book
 
 import androidx.room.Dao
+import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
@@ -11,10 +12,16 @@ import kotlinx.coroutines.flow.Flow
 interface BookDao {
     @Query("SELECT * FROM books")
     fun getAllBooks(): Flow<List<BookEntity>>
+
+    @Query("SELECT * FROM books")
+    suspend fun getAllBooksOnce(): List<BookEntity>
+
     @Query("SELECT * FROM books WHERE uri = :uri LIMIT 1")
     suspend fun getBook(uri: String): BookEntity?
+
     @Query("SELECT * FROM books WHERE lastReadTime > 0 ORDER BY lastReadTime DESC LIMIT 1")
     fun getRecentBook(): Flow<BookEntity?>
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertBooks(books: List<BookEntity>)
 
@@ -29,4 +36,7 @@ interface BookDao {
 
     @Update
     suspend fun updateBookInfo(book : BookEntity)
+
+    @Delete
+    suspend fun deleteBooks(books: List<BookEntity>)
 }

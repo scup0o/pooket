@@ -1,4 +1,4 @@
-package com.project.ui.theme
+package com.project.pooket.core.theme
 
 import androidx.compose.material3.Typography
 

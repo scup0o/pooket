@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import android.util.LruCache
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -19,6 +20,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
+import androidx.core.graphics.createBitmap
+import androidx.core.net.toUri
 
 @HiltViewModel
 class ReaderViewModel @Inject constructor(
@@ -27,7 +30,6 @@ class ReaderViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val _pdfRenderer = MutableStateFlow<PdfRenderer?>(null)
-    val pdfRenderer = _pdfRenderer.asStateFlow()
 
     private val _pageCount = MutableStateFlow(0)
     val pageCount = _pageCount.asStateFlow()
@@ -47,16 +49,20 @@ class ReaderViewModel @Inject constructor(
     private val _initialPage = MutableStateFlow(0)
     val initialPage = _initialPage.asStateFlow()
 
-    private val bitmapCache = LruCache<Int, Bitmap>((Runtime.getRuntime().maxMemory() / 1024 / 8).toInt())
-    private val textCache = LruCache<Int, String>(100)
+    private val bitmapCache =
+        object : LruCache<Int, Bitmap>((Runtime.getRuntime().maxMemory() / 1024 / 4).toInt()) {
+            override fun sizeOf(key: Int, value: Bitmap): Int = value.byteCount / 1024
+        }
+    private val textCache = LruCache<Int, String>(200)
 
     private val rendererMutex = Mutex()
     private var fileDescriptor: ParcelFileDescriptor? = null
+
+    private var pdDocument: PDDocument? = null
     private var currentBookUri: String? = null
     private var saveJob: Job? = null
 
     init {
-        // Correct initialization for Emulator/Android environment
         PDFBoxResourceLoader.init(app)
     }
 
@@ -65,18 +71,17 @@ class ReaderViewModel @Inject constructor(
             _isLoading.value = false
             return
         }
+        cleanupResources()
 
         currentBookUri = uriString
         _isLoading.value = true
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // 1. Load book data from DB first
                 val book = repository.getBook(uriString)
                 _initialPage.value = book?.lastPage ?: 0
 
-                // 2. Open File Descriptor
-                val uri = Uri.parse(uriString)
+                val uri = uriString.toUri()
                 fileDescriptor = app.contentResolver.openFileDescriptor(uri, "r")
 
                 fileDescriptor?.let { fd ->
@@ -89,10 +94,32 @@ class ReaderViewModel @Inject constructor(
                     }
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e("ReaderVM", "Failed to load PDF", e)
             } finally {
-                // Ensure loading is set to false even if load fails
                 _isLoading.value = false
+            }
+        }
+    }
+
+    private fun cleanupResources() {
+        CoroutineScope(Dispatchers.IO + NonCancellable).launch {
+            try {
+                rendererMutex.withLock {
+                    pdDocument?.close()
+                    pdDocument = null
+
+                    _pdfRenderer.value?.close()
+                    _pdfRenderer.value = null
+
+                    fileDescriptor?.close()
+                    fileDescriptor = null
+
+                    bitmapCache.evictAll()
+                    textCache.evictAll()
+                    Log.d("ReaderVM", "Resources cleaned successfully")
+                }
+            } catch (e: Exception) {
+                Log.e("ReaderVM", "Cleanup error", e)
             }
         }
     }
@@ -103,29 +130,48 @@ class ReaderViewModel @Inject constructor(
 
         rendererMutex.withLock {
             bitmapCache.get(index)?.let { return@withLock it }
+            var page: PdfRenderer.Page? = null
             try {
-                val page = renderer.openPage(index)
-                // Emulator usually has more RAM, so 1.8f is safe for high resolution
-                val scale = 1.8f
+                page = renderer.openPage(index)
+                val density = app.resources.displayMetrics.density
                 val screenWidth = app.resources.displayMetrics.widthPixels
-                val bWidth = (screenWidth * scale).toInt()
-                val bHeight = (bWidth.toFloat() / page.width * page.height).toInt()
+                val targetWidth = (screenWidth * (if (density > 2) 1.5f else 2.0f)).toInt()
+                val targetHeight = (targetWidth.toFloat() / page.width * page.height).toInt()
 
-                val bitmap = Bitmap.createBitmap(bWidth, bHeight, Bitmap.Config.ARGB_8888)
+                val bitmap = createBitmap(targetWidth, targetHeight)
+                bitmap.eraseColor(android.graphics.Color.WHITE)
+
                 page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                page.close()
+
                 bitmapCache.put(index, bitmap)
                 bitmap
-            } catch (e: Exception) { null }
+            } catch (e: Exception) {
+                Log.e("ReaderVM", "Error rendering page $index", e)
+                null
+            } finally {
+                try {
+                    page?.close()
+                } catch (_: Exception) {
+                }
+            }
         }
     }
 
     suspend fun extractText(index: Int): String = withContext(Dispatchers.IO) {
         textCache.get(index)?.let { return@withContext it }
-        try {
-            val uri = Uri.parse(currentBookUri ?: return@withContext "")
-            app.contentResolver.openInputStream(uri)?.use { stream ->
-                PDDocument.load(stream).use { doc ->
+
+        rendererMutex.withLock {
+            textCache.get(index)?.let { return@withLock it }
+
+            try {
+                if (pdDocument == null) {
+                    val uri = (currentBookUri ?: return@withLock "").toUri()
+                    app.contentResolver.openInputStream(uri)?.use { stream ->
+                        pdDocument = PDDocument.load(stream)
+                    }
+                }
+
+                pdDocument?.let { doc ->
                     val stripper = PDFTextStripper().apply {
                         startPage = index + 1
                         endPage = index + 1
@@ -133,31 +179,38 @@ class ReaderViewModel @Inject constructor(
                     val text = stripper.getText(doc).trim()
                     if (text.isNotEmpty()) textCache.put(index, text)
                     text
-                }
-            } ?: ""
-        } catch (e: Exception) { "" }
+                } ?: ""
+            } catch (e: Exception) {
+                Log.e("ReaderVM", "Text extraction failed", e)
+                ""
+            }
+        }
     }
 
-    fun toggleReadingMode() { _isVerticalScrollMode.value = !_isVerticalScrollMode.value }
-    fun toggleTextMode() { _isTextMode.value = !_isTextMode.value }
-    fun setFontSize(size: Float) { _fontSize.value = size }
+
+    fun toggleReadingMode() {
+        _isVerticalScrollMode.value = !_isVerticalScrollMode.value
+    }
+
+    fun toggleTextMode() {
+        _isTextMode.value = !_isTextMode.value
+    }
+
+    fun setFontSize(size: Float) {
+        _fontSize.value = size
+    }
 
     fun onPageChanged(pageIndex: Int) {
         val uri = currentBookUri ?: return
         saveJob?.cancel()
         saveJob = viewModelScope.launch {
             delay(500)
-            repository.saveProgress(uri, pageIndex, _pageCount.value)
+            repository.saveProgress(uri, pageIndex)
         }
     }
 
     override fun onCleared() {
         super.onCleared()
-        try {
-            _pdfRenderer.value?.close()
-            fileDescriptor?.close()
-            bitmapCache.evictAll()
-            textCache.evictAll()
-        } catch (e: Exception) { }
+        cleanupResources()
     }
 }

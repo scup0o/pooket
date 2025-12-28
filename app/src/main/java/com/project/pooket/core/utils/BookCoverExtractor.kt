@@ -1,4 +1,4 @@
-package com.example.pooket.core.utils
+package com.project.pooket.core.utils
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -14,12 +14,12 @@ import java.io.FileOutputStream
 
 @Singleton
 class BookCoverExtractor @Inject constructor() {
-    suspend fun extractCover(context: Context, fileUri: Uri, title: String): String? = withContext(
+    suspend fun extractCover(context: Context, fileUri: Uri): String? = withContext(
         Dispatchers.IO) {
         val cacheDir = File(context.cacheDir, "book_covers")
         if (!cacheDir.exists()) cacheDir.mkdirs()
 
-        val coverFile = File(cacheDir, "${title.hashCode()}.jpg")
+        val coverFile = File(cacheDir, "${fileUri.toString().hashCode()}.jpg")
         if (coverFile.exists()) return@withContext coverFile.absolutePath
 
         try {
@@ -39,6 +39,7 @@ class BookCoverExtractor @Inject constructor() {
 
                         //create a small bitmap to saves RAM
                         val bitmap = createBitmap(targetWidth, targetHeight)
+                        bitmap.eraseColor(android.graphics.Color.WHITE)
 
                         //render the huge PDF page into the tiny Bitmap
                         page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)

@@ -2,6 +2,7 @@ package com.project.pooket.ui.features.library
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -19,6 +20,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -64,22 +66,19 @@ fun LibraryMainScreen(
             )
         }
     ) { innerPadding ->
-        Box(modifier = Modifier.fillMaxSize().padding(top = innerPadding.calculateTopPadding())) {
 
             if (books.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxSize().padding(innerPadding), contentAlignment = Alignment.Center) {
                     Text("No books found. Click + to scan.")
                 }
             } else {
                 LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 100.dp),
-                    contentPadding = PaddingValues(16.dp),
+                    columns = GridCells.Adaptive(minSize = 120.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize().padding(innerPadding)
                 ) {
 
-                    // 1. CONTINUE READING SECTION (Full Width)
                     if (recentBook != null) {
                         item(span = { GridItemSpan(maxLineSpan) }) {
                             ContinueReadingCard(
@@ -97,7 +96,6 @@ fun LibraryMainScreen(
                         }
                     }
 
-                    // 2. ALL BOOKS GRID
                     items(items = books, key = { it.uri }) { book ->
                         BookItem(
                             book = book,
@@ -106,6 +104,30 @@ fun LibraryMainScreen(
                     }
                 }
             }
+
+    }
+}
+
+@Composable
+fun BookCover(coverPath: String?, title: String, modifier: Modifier = Modifier) {
+    if (coverPath != null) {
+        AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current)
+                .data(File(coverPath))
+                .crossfade(true)
+                .diskCacheKey(coverPath)
+                .memoryCacheKey(coverPath)
+                .build(),
+            contentDescription = title,
+            contentScale = ContentScale.Crop,
+            modifier = modifier
+        )
+    } else {
+        Box(
+            modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(title.take(1).uppercase(), style = MaterialTheme.typography.headlineMedium)
         }
     }
 }
@@ -114,67 +136,35 @@ fun LibraryMainScreen(
 fun ContinueReadingCard(book: BookEntity, onClick: () -> Unit) {
     Card(
         onClick = onClick,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        modifier = Modifier.fillMaxWidth().height(140.dp)
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        modifier = Modifier.fillMaxWidth().height(120.dp)
     ) {
         Row(Modifier.fillMaxSize()) {
-            // Cover Image
-            if (book.coverImagePath != null) {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(File(book.coverImagePath))
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.width(90.dp).fillMaxHeight()
-                )
-            } else {
-                Box(Modifier.width(90.dp).fillMaxHeight().padding(8.dp), contentAlignment = Alignment.Center) {
-                    Text(book.title.take(1), style = MaterialTheme.typography.headlineLarge)
-                }
-            }
-
-            // Info Column
+            BookCover(
+                coverPath = book.coverImagePath,
+                title = book.title,
+                modifier = Modifier.width(80.dp).fillMaxHeight()
+            )
             Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(16.dp),
+                modifier = Modifier.weight(1f).padding(12.dp),
                 verticalArrangement = Arrangement.Center
             ) {
-                Text(
-                    text = "Continue Reading",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = book.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.height(8.dp))
+                Text(book.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
 
-                // Progress Bar
-                if (book.totalPages > 0) {
-                    val progress = book.lastPage.toFloat() / book.totalPages.toFloat()
+                val progress = remember(book.lastPage, book.totalPages) {
+                    if (book.totalPages > 0) book.lastPage.toFloat() / book.totalPages else 0f
+                }
+
+                if (progress > 0) {
+                    Spacer(Modifier.height(8.dp))
                     LinearProgressIndicator(
                         progress = { progress },
-                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                        modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
                     )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = "${(progress * 100).toInt()}% Completed",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    Text("${(progress * 100).toInt()}%", style = MaterialTheme.typography.labelSmall)
                 }
             }
-
-            // Play Icon
-            Box(Modifier.fillMaxHeight().padding(end = 16.dp), contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.PlayArrow, null)
-            }
+            Icon(Icons.Default.PlayArrow, null, Modifier.align(Alignment.CenterVertically).padding(16.dp))
         }
     }
 }
@@ -182,57 +172,33 @@ fun ContinueReadingCard(book: BookEntity, onClick: () -> Unit) {
 @Composable
 fun BookItem(book: BookEntity, onClick: () -> Unit) {
     Column(
-        modifier = Modifier
-            .width(100.dp),
+        modifier = Modifier.width(120.dp).clickable { onClick() },
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Card(
             shape = RoundedCornerShape(8.dp),
-            elevation = CardDefaults.cardElevation(4.dp),
-            modifier = Modifier
-                .height(150.dp)
-                .fillMaxWidth()
-                .clickable { onClick() },
-            ) {
-            if (book.coverImagePath!= null) {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(File(book.coverImagePath))
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(book.title.take(1), style = MaterialTheme.typography.displayMedium)
+            modifier = Modifier.height(160.dp).fillMaxWidth(),
+        ) {
+            Box {
+                BookCover(coverPath = book.coverImagePath, title = book.title, modifier = Modifier.fillMaxSize())
+                if (book.totalPages > 0) {
+                    val progress = remember(book.lastPage, book.totalPages) {
+                        book.lastPage.toFloat() / book.totalPages
+                    }
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(4.dp),
+                        trackColor = Color.Transparent
+                    )
                 }
             }
-            if (book.totalPages > 0) {
-                val progress = book.lastPage.toFloat() / book.totalPages.toFloat()
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(4.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-            }
         }
-        Spacer(Modifier.height(8.dp))
         Text(
             text = book.title,
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.labelSmall,
             maxLines = 2,
-            modifier = Modifier.padding(horizontal = 4.dp),
-            overflow = TextOverflow.Ellipsis
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 4.dp)
         )
     }
 }

@@ -50,7 +50,6 @@ fun AppRouting(
                     }
                     is NavigationManager.Command.GoBack -> navController.popBackStack()
                     is NavigationManager.Command.OpenDrawer -> scope.launch { drawerState.open() }
-                    else -> {}
                 }
             }
         }
