@@ -7,7 +7,6 @@ import javax.inject.Singleton
 
 @Singleton
 class NavigationManager @Inject constructor() {
-
     sealed class Command {
         data class Navigate(val route: String) : Command()
         data object GoBack : Command()

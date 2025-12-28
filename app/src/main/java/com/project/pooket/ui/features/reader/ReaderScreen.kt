@@ -1,6 +1,7 @@
 package com.project.pooket.ui.features.reader
 
 import android.graphics.Bitmap
+import android.util.Log
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -33,70 +34,80 @@ import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
-
 @Composable
 fun ReaderScreen(
     bookUri: String,
     viewModel: ReaderViewModel = hiltViewModel(),
     isNightMode: Boolean,
     onBack: () -> Unit,
-    // Add these if your app has a global settings for night light
-    nightLightEnabled: Boolean = false,
-    nightLightWarmth: Float = 0.5f,
-    nightLightDimming: Float = 0f
 ) {
     val scope = rememberCoroutineScope()
 
-    // --- State Observation ---
+    // --- State Observation (ViewModel) ---
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
-    val renderer by viewModel.pdfRenderer.collectAsStateWithLifecycle()
     val totalPages by viewModel.pageCount.collectAsStateWithLifecycle()
     val isVerticalMode by viewModel.isVerticalScrollMode.collectAsStateWithLifecycle()
     val isTextMode by viewModel.isTextMode.collectAsStateWithLifecycle()
     val fontSize by viewModel.fontSize.collectAsStateWithLifecycle()
     val initialPage by viewModel.initialPage.collectAsStateWithLifecycle()
 
-    // --- UI State ---
-    var showControls by remember { mutableStateOf(true) }
+    // --- The Master State (The single source of truth for the page) ---
+    var masterPage by remember { mutableIntStateOf(0) }
+    var isInitialized by remember { mutableStateOf(false) }
+    var isSwitchingModes by remember { mutableStateOf(false) }
+
+    // --- The Puppet States (UI Components) ---
     val pagerState = rememberPagerState(pageCount = { totalPages })
     val listState = rememberLazyListState()
 
-    // --- Zoom/Pan State ---
-    var globalScale by remember { mutableFloatStateOf(1f) }
-    var globalOffset by remember { mutableStateOf(Offset.Zero) }
-
-    // 1. Load PDF
+    // 1. Initial Load: Set Master from Database
     LaunchedEffect(bookUri) { viewModel.loadPdf(bookUri) }
 
-    // 2. Initial Jump (When first opening)
-    var hasJumped by remember(bookUri) { mutableStateOf(false) }
     LaunchedEffect(isLoading, totalPages) {
-        if (!isLoading && totalPages > 0 && !hasJumped) {
-            if (isVerticalMode) listState.scrollToItem(initialPage)
-            else pagerState.scrollToPage(initialPage)
-            hasJumped = true
+        if (!isLoading && totalPages > 0 && !isInitialized) {
+            masterPage = initialPage
+            if (isVerticalMode) listState.scrollToItem(masterPage)
+            else pagerState.scrollToPage(masterPage)
+            isInitialized = true
         }
     }
 
-    // 3. Mode/Text Sync (Fixes "Reset to Page 1" and "Jumping farther" bugs)
+    // 2. Logic: Mode Switcher (When mode changes, force UI to Master)
+    // We use isSwitchingModes to "lock" the listener so the UI doesn't
+    // accidentally set the masterPage back to 0 during recomposition.
     LaunchedEffect(isVerticalMode, isTextMode) {
-        if (hasJumped) {
-            globalScale = 1f
-            globalOffset = Offset.Zero
-            val targetIndex = if (isVerticalMode) pagerState.currentPage else listState.firstVisibleItemIndex
-            if (isVerticalMode) listState.scrollToItem(targetIndex)
-            else pagerState.scrollToPage(targetIndex)
+        if (isInitialized) {
+            isSwitchingModes = true
+
+            if (isVerticalMode) listState.scrollToItem(masterPage)
+            else pagerState.scrollToPage(masterPage)
+
+            isSwitchingModes = false
         }
     }
 
-    // 4. Save Progress logic
-    val currentPage = if (isVerticalMode) listState.firstVisibleItemIndex else pagerState.currentPage
-    LaunchedEffect(currentPage) {
-        if (hasJumped) viewModel.onPageChanged(currentPage)
+    // 3. Logic: Update Master when User Scrolls
+    val activeUiPage = remember(isVerticalMode) {
+        derivedStateOf { if (isVerticalMode) listState.firstVisibleItemIndex else pagerState.currentPage }
     }
+
+    LaunchedEffect(activeUiPage.value) {
+        if (isInitialized && !isSwitchingModes) {
+            if (masterPage != activeUiPage.value) {
+                masterPage = activeUiPage.value
+                Log.i("Reader", "Master Page updated to: $masterPage")
+                viewModel.onPageChanged(masterPage)
+            }
+        }
+    }
+
+    // --- UI Controls State ---
+    var showControls by remember { mutableStateOf(true) }
+    var globalScale by remember { mutableFloatStateOf(1f) }
+    var globalOffset by remember { mutableStateOf(Offset.Zero) }
 
     Scaffold(
         containerColor = if (isNightMode) Color.Black else Color.White,
@@ -113,14 +124,16 @@ fun ReaderScreen(
                 onToggleTextMode = viewModel::toggleTextMode,
                 onPrevPage = {
                     scope.launch {
-                        if (isVerticalMode) listState.animateScrollToItem((listState.firstVisibleItemIndex - 1).coerceAtLeast(0))
-                        else pagerState.animateScrollToPage((pagerState.currentPage - 1).coerceAtLeast(0))
+                        val target = (masterPage - 1).coerceAtLeast(0)
+                        if (isVerticalMode) listState.animateScrollToItem(target)
+                        else pagerState.animateScrollToPage(target)
                     }
                 },
                 onNextPage = {
                     scope.launch {
-                        if (isVerticalMode) listState.animateScrollToItem((listState.firstVisibleItemIndex + 1).coerceAtMost(totalPages - 1))
-                        else pagerState.animateScrollToPage((pagerState.currentPage + 1).coerceAtMost(totalPages - 1))
+                        val target = (masterPage + 1).coerceAtMost(totalPages - 1)
+                        if (isVerticalMode) listState.animateScrollToItem(target)
+                        else pagerState.animateScrollToPage(target)
                     }
                 }
             )
@@ -139,7 +152,6 @@ fun ReaderScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        // Gesture Input
                         .pointerInput(isVerticalMode, isTextMode) {
                             detectTapGestures(
                                 onTap = { showControls = !showControls },
@@ -164,7 +176,6 @@ fun ReaderScreen(
                                         globalScale = (globalScale * zoomChange).coerceIn(1f, 5f)
 
                                         if (isVerticalMode) {
-                                            // FIX: Vertical scrolling via List state, horizontal via offset
                                             if (panChange.y != 0f) {
                                                 scope.launch { listState.dispatchRawDelta(-panChange.y / globalScale) }
                                             }
@@ -202,10 +213,9 @@ fun ReaderScreen(
                     }
                 }
 
-                // Page Indicator
                 if (showControls) {
                     PageIndicator(
-                        currentPage = currentPage + 1,
+                        currentPage = masterPage + 1, // Display master page
                         totalPages = totalPages,
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
@@ -231,6 +241,7 @@ fun PdfPageItem(
 
     LaunchedEffect(pageIndex, isTextMode) {
         if (isTextMode) {
+            Log.i("reader", "extract page: $pageIndex")
             if (textContent == null) textContent = viewModel.extractText(pageIndex)
         } else {
             if (bitmap == null) bitmap = viewModel.renderPage(pageIndex)

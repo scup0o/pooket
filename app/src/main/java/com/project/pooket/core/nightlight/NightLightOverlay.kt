@@ -1,45 +1,10 @@
-//package com.example.pooket.core.nightlight
-//
-//import androidx.compose.foundation.background
-//import androidx.compose.foundation.layout.Box
-//import androidx.compose.foundation.layout.fillMaxSize
-//import androidx.compose.runtime.Composable
-//import androidx.compose.ui.Modifier
-//import androidx.compose.ui.graphics.Color
-//import androidx.compose.ui.graphics.lerp
-//
-//@Composable
-//fun NightLightOverlay(
-//    isEnabled: Boolean,
-//    warmth: Float,
-//    dimming: Float
-//) {
-//    if (!isEnabled) return
-//
-//    val coldColor = Color(0xFFFFF9E5).copy(alpha = 0.0f)
-//    val deepColor = Color(0xFFFF8F00).copy(alpha = 0.35f)
-//
-//    val warmthFilter = lerp(coldColor, deepColor, warmth)
-//
-//    val dimmingFilter = Color.Black.copy(alpha = dimming * 0.7f)
-//
-//    Box(
-//        modifier = Modifier
-//            .fillMaxSize()
-//            .background(warmthFilter)
-//    ) {
-//        if (dimming > 0f) {
-//            Box(
-//                modifier = Modifier
-//                    .fillMaxSize()
-//                    .background(dimmingFilter)
-//            )
-//        }
-//    }
-//}
-
 package com.project.pooket.core.nightlight
 
+import android.graphics.Color as AndroidColor
+import android.os.Build
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -47,30 +12,87 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.graphics.drawable.toDrawable
 
 @Composable
 fun NightLightOverlay(
-    isEnabled : Boolean,
-    warmth : Float,
+    isEnabled: Boolean,
+    warmth: Float,
     dimming: Float
-){
+) {
     if (!isEnabled) return
-    Canvas(modifier = Modifier.fillMaxSize()) {
-        //warmth
-        val coldColor = Color(1.0f, 0.95f, 0.9f)
-        val deepColor = Color(1.0f, 0.6f, 0.2f)
-        val filterColor = lerp(coldColor, deepColor, warmth)
-        drawRect(
-            color = filterColor,
-            blendMode = BlendMode.Multiply
-        )
+    // < android 9 (API 28) or older
+    val useLegacyRendering = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
 
-        //dimming
-        if (dimming>0f){
+    if (useLegacyRendering) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { context ->
+                FrameLayout(context).apply {
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+
+                    val warmthView = View(context).apply {
+                        layoutParams = FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                            FrameLayout.LayoutParams.MATCH_PARENT
+                        )
+                    }
+                    addView(warmthView)
+
+                    val dimmingView = View(context).apply {
+                        layoutParams = FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                            FrameLayout.LayoutParams.MATCH_PARENT
+                        )
+                        setBackgroundColor(AndroidColor.TRANSPARENT)
+                    }
+                    addView(dimmingView)
+                }
+            },
+            update = { parent ->
+                val warmthView = parent.getChildAt(0)
+                val dimmingView = parent.getChildAt(1)
+
+                val r = (255 - (warmth * 95)).toInt()
+                val g = (60 + ((1.0f - warmth) * 160)).toInt()
+                val b = 0
+                val alpha = 0.1f + (warmth * 0.45f)
+                val alphaInt = (alpha * 255).toInt()
+                warmthView.setBackgroundColor(AndroidColor.argb(alphaInt, r, g, b))
+
+                val baseDimming = if (warmth > 0.5f) (warmth - 0.5f) * 0.3f else 0f
+                val totalDimming = (dimming + baseDimming).coerceAtMost(0.8f)
+                if (totalDimming > 0f) {
+                    val dimAlpha = (totalDimming * 255).toInt()
+                    dimmingView.setBackgroundColor(AndroidColor.argb(dimAlpha, 0, 0, 0))
+                } else {
+                    dimmingView.setBackgroundColor(AndroidColor.TRANSPARENT)
+                }
+            }
+        )
+    } else {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            //warmth
+            val coldColor = Color(1.0f, 0.95f, 0.9f)
+            val deepColor = Color(1.0f, 0.6f, 0.2f)
+            val filterColor = lerp(coldColor, deepColor, warmth)
             drawRect(
-                color = Color.Black.copy(alpha = dimming*0.8f),
-                blendMode = BlendMode.Darken
+                color = filterColor,
+                blendMode = BlendMode.Multiply
             )
+
+            //dimming
+            if (dimming > 0f) {
+                drawRect(
+                    color = Color.Black.copy(alpha = dimming * 0.8f),
+                    blendMode = BlendMode.Darken
+                )
+            }
         }
     }
 }
