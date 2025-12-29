@@ -15,7 +15,10 @@ data class NoteEntity(
     val noteContent: String,
     val timestamp: Long = System.currentTimeMillis(),
     val colorHex: Long = 0xFFFFFF00, // Yellow default
-    val rectsJson: String // Stored as JSON string of normalized coordinates
+    val rectsJson: String,
+
+    val textRangeStart: Int? = null,
+    val textRangeEnd: Int? = null
 ) {
     fun getRects(): List<NormRect> {
         return try {

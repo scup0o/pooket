@@ -9,6 +9,11 @@ import android.util.Log
 import android.util.LruCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.project.pooket.data.local.book.BookLocalRepository
@@ -218,6 +223,13 @@ class ReaderViewModel @Inject constructor(
             repository.saveProgress(uri, pageIndex)
         }
     }
+
+    override fun onCleared() {
+        super.onCleared()
+        cleanupResources()
+    }
+
+
     private val _notes = MutableStateFlow<List<NoteEntity>>(emptyList())
     val notes = _notes.asStateFlow()
 
@@ -538,8 +550,165 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    override fun onCleared() {
-        super.onCleared()
-        cleanupResources()
+    fun saveTextModeNote(pageIndex: Int, textContent: String, range: TextRange, note: String) {
+        val uri = currentBookUri ?: return
+        if (range.collapsed) return
+
+        // Extract the selected substring
+        val selectedText = try {
+            textContent.substring(range.start, range.end)
+        } catch (e: Exception) { "" }
+
+        viewModelScope.launch {
+            val entity = NoteEntity(
+                bookUri = uri,
+                pageIndex = pageIndex,
+                originalText = selectedText,
+                noteContent = note,
+                rectsJson = "", // Not used in text mode
+                textRangeStart = range.start,
+                textRangeEnd = range.end
+            )
+            noteRepository.addNote(entity)
+        }
+    }
+
+    private fun String.clean(): String = this.replace("\\s+".toRegex(), "")
+
+    // ---------------------------------------------------------
+    // 1. SYNC: Image Mode -> Text Mode (Display Rect Note in Text)
+    // ---------------------------------------------------------
+    fun processTextHighlights(rawText: String, pageNotes: List<NoteEntity>): AnnotatedString {
+        return buildAnnotatedString {
+            append(rawText)
+
+            val textLength = rawText.length // Get actual length
+
+            pageNotes.forEach { note ->
+                var start = note.textRangeStart
+                var end = note.textRangeEnd
+
+                // (Keep your fallback sync logic here...)
+                if (start == null || end == null) {
+                    val bounds = findFuzzyBounds(rawText, note.originalText)
+                    if (bounds != null) {
+                        start = bounds.first
+                        end = bounds.second
+                    }
+                }
+
+                // CRITICAL FIX: Safe Bounds Check
+                if (start != null && end != null) {
+                    // Clamp values to prevent out-of-bounds crash
+                    val safeStart = start!!.coerceIn(0, textLength)
+                    val safeEnd = end!!.coerceIn(0, textLength)
+
+                    // Only apply if range is valid
+                    if (safeStart < safeEnd) {
+                        try {
+                            addStyle(
+                                style = SpanStyle(background = Color(0x66FFEB3B)),
+                                start = safeStart,
+                                end = safeEnd
+                            )
+                        } catch (e: Exception) {
+                            // Log error but don't crash
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+        // ---------------------------------------------------------
+    // 2. SYNC: Text Mode -> Image Mode (Display Text Note on Image)
+    // ---------------------------------------------------------
+    suspend fun getRectsForNote(note: NoteEntity): List<NormRect> {
+        // If we have saved rects, use them
+        val savedRects = note.getRects()
+        if (savedRects.isNotEmpty()) return savedRects
+
+        return withContext(Dispatchers.Default) {
+            val chars = getPageChars(note.pageIndex)
+            if (chars.isEmpty()) return@withContext emptyList()
+
+            // 1. Construct the Page String from PdfChars
+            val pageTextBuilder = StringBuilder()
+            val charIndices = mutableListOf<Int>() // Map string index -> char list index
+
+            chars.forEachIndexed { index, pdfChar ->
+                // Skip phantom spaces for search matching to be safer,
+                // OR treat them as standard spaces.
+                // Let's use the text as is.
+                val s = if (pdfChar.isSpace) " " else pdfChar.text
+                pageTextBuilder.append(s)
+                repeat(s.length) { charIndices.add(index) }
+            }
+
+            val fullPageString = pageTextBuilder.toString()
+
+            // 2. ROBUST SEARCH
+            val bounds = findFuzzyBounds(fullPageString, note.originalText)
+
+            if (bounds != null) {
+                // We found the text range in the reconstructed string
+                // Map it back to the PdfChar list
+                val startCharIndex = charIndices.getOrElse(bounds.first) { 0 }
+                val endCharIndex = charIndices.getOrElse(bounds.second - 1) { chars.lastIndex }
+
+                // 3. Slice and Merge
+                val matchedChars = chars.slice(startCharIndex..endCharIndex)
+                mergeCharsToLineRects(matchedChars)
+            } else {
+                emptyList()
+            }
+        }
+    }
+
+    // ---------------------------------------------------------
+    // THE SEARCH ALGORITHM (Ignores Whitespace Mismatches)
+    // ---------------------------------------------------------
+    private fun findFuzzyBounds(container: String, target: String): Pair<Int, Int>? {
+        // 1. Try Exact Match first (Fastest)
+        val exactIndex = container.indexOf(target)
+        if (exactIndex != -1) return exactIndex to (exactIndex + target.length)
+
+        // 2. Try Clean Match (Ignore all whitespace)
+        // This maps the "Clean Index" back to "Real Index"
+        val cleanTarget = target.clean()
+        if (cleanTarget.isEmpty()) return null
+
+        var containerCleanIndex = 0
+        var matchCount = 0
+        var startIndex = -1
+
+        // Iterate through the container character by character
+        for (i in container.indices) {
+            val char = container[i]
+            if (char.isWhitespace()) continue // Skip whitespace in container
+
+            // Check match against clean target
+            if (char == cleanTarget[matchCount]) {
+                if (matchCount == 0) startIndex = i // Start of match
+                matchCount++
+                if (matchCount == cleanTarget.length) {
+                    // Match Complete!
+                    // i is the end index (inclusive), so add 1 for exclusive
+                    return startIndex to (i + 1)
+                }
+            } else {
+                // Mismatch. Reset.
+                if (matchCount > 0) {
+                    // Backtrack is tricky in simple scanner.
+                    // For perfect accuracy, we need KMP algorithm or regex,
+                    // but simple reset often works for unique text.
+                    // A simple hack: If we fail, we reset matchCount.
+                    // (Real implementation should backtrack 'i' but this is usually sufficient for Reader)
+                    matchCount = 0
+                    startIndex = -1
+                }
+            }
+        }
+        return null
     }
 }

@@ -15,6 +15,7 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -29,6 +30,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
@@ -40,8 +42,15 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalTextToolbar
+import androidx.compose.ui.platform.TextToolbar
+import androidx.compose.ui.platform.TextToolbarStatus
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -50,9 +59,12 @@ import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.window.Popup
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.project.pooket.data.local.note.NormRect
 import com.project.pooket.data.local.note.NoteEntity
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -380,15 +392,14 @@ fun PdfPageItem(
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
     var textContent by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(pageIndex, isTextMode) {
-        if (isTextMode) {
-            if (textContent == null) textContent = viewModel.extractText(pageIndex)
-        } else {
-            if (bitmap == null) {
-                bitmap = viewModel.renderPage(pageIndex)
-            }
-        }
-    }
+
+    //text
+    var textFieldValue by remember(pageIndex, isTextMode) { mutableStateOf(TextFieldValue()) }
+
+
+
+
+    //image
     val selection by viewModel.selectionState.collectAsStateWithLifecycle()
     val allNotes by viewModel.notes.collectAsStateWithLifecycle()
     val pageNotes = remember(allNotes, pageIndex) { allNotes.filter { it.pageIndex == pageIndex } }
@@ -399,20 +410,186 @@ fun PdfPageItem(
     val clipboardManager = LocalClipboardManager.current
     var containerSize by remember { mutableStateOf(Size.Zero) }
 
+    LaunchedEffect(pageIndex, isTextMode) {
+        if (isTextMode) {
+            if (textContent == null) {
+                val raw = viewModel.extractText(pageIndex)
+                textContent = raw
+                // Initial load
+                textFieldValue = TextFieldValue(viewModel.processTextHighlights(raw, pageNotes))
+            }
+        } else {
+            if (bitmap == null) {
+                bitmap = viewModel.renderPage(pageIndex)
+            }
+        }
+    }
+    var noteRectsMap by remember { mutableStateOf<Map<Long, List<NormRect>>>(emptyMap()) }
+
+    // CRITICAL: Add 'isTextMode' to keys to force refresh if needed
+    // CRITICAL: Use LaunchedEffect correctly
+    LaunchedEffect(pageNotes, isTextMode) {
+        // Run calculation in background
+        withContext(Dispatchers.Default) {
+            val newMap = mutableMapOf<Long, List<NormRect>>()
+
+            pageNotes.forEach { note ->
+                // If it already has rects (Image Mode created), this is fast.
+                // If it needs calculation (Text Mode created), this runs the Fuzzy Search.
+                newMap[note.id] = viewModel.getRectsForNote(note)
+            }
+
+            // Update UI on Main Thread
+            withContext(Dispatchers.Main) {
+                noteRectsMap = newMap
+            }
+        }
+    }
+
+    LaunchedEffect(pageNotes) {
+        if (textContent != null) {
+            val annotated = viewModel.processTextHighlights(textContent!!, pageNotes)
+            // Preserve current selection if any
+            textFieldValue = textFieldValue.copy(annotatedString = annotated)
+        }
+    }
+
+    // --- TEXT MODE RENDER ---
     if (isTextMode) {
-        SelectionContainer {
-            Text(
-                text = textContent ?: "Extracting text...",
-                fontSize = fontSize.sp,
-                lineHeight = (fontSize * 1.5f).sp,
-                color = if (isNightMode) Color.LightGray else Color.Black,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp)
-                    .then(if (!isVerticalMode) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+        // State for Custom Toolbar
+        var selectionRect by remember { mutableStateOf<Rect?>(null) }
+        var showNoteDialog by remember { mutableStateOf(false) }
+        val clipboardManager = LocalClipboardManager.current
+
+        // Custom Toolbar Implementation
+        val customToolbar = remember {
+            CustomTextToolbar(
+                onShowMenu = { rect -> selectionRect = rect },
+                onHideMenu = { selectionRect = null },
+                onCopy = {
+                    // Manual copy handled in popup
+                }
             )
         }
-        return
+
+        // Layout Map for Icons
+        var layoutResult by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
+        var clickedNoteContent by remember { mutableStateOf<String?>(null) }
+
+        // Intercept the LocalTextToolbar
+        CompositionLocalProvider(
+            LocalTextToolbar provides customToolbar
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 24.dp)
+                    // Allow vertical scrolling for the page text
+                    .then(if (!isVerticalMode) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+            ) {
+                // 1. THE TEXT (Read-Only Field)
+                if (textContent == null) {
+                    Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                } else {
+                    BasicTextField(
+                        value = textFieldValue,
+                    onValueChange = { newValue ->
+                        // Only allow selection changes, forbid text editing
+                        if (newValue.annotatedString.text == textFieldValue.annotatedString.text) {
+                            textFieldValue = newValue
+                        }
+                    },
+                    readOnly = true, // Enables native selection but no keyboard
+                    textStyle = TextStyle(
+                        fontSize = fontSize.sp,
+                        lineHeight = (fontSize * 1.5).sp,
+                        color = if (isNightMode) Color.LightGray else Color.Black,
+                        textAlign = TextAlign.Justify
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                    onTextLayout = { layoutResult = it }
+                )}
+
+                // 2. NOTE ICONS (Overlay)
+                if (layoutResult != null) {
+                    pageNotes.forEach { note ->
+                        if (note.textRangeStart != null) {
+                            // Calculate position based on the START index of the note
+                            val bounds = layoutResult!!.getBoundingBox(note.textRangeStart)
+                            // Position icon at top-left of the text line
+                            val iconX = bounds.left
+                            val iconY = with(LocalDensity.current){bounds.top - 24.dp.toPx()}
+
+                            Box(
+                                modifier = Modifier
+                                    .offset { IntOffset(iconX.toInt(), iconY.toInt()) }
+                                    .size(24.dp)
+                                    .background(Color.White, androidx.compose.foundation.shape.CircleShape)
+                                    .shadow(1.dp, androidx.compose.foundation.shape.CircleShape)
+                                    .clickable { clickedNoteContent = note.noteContent }
+                            ) {
+                                Icon(
+                                    Icons.Default.Comment, "Note",
+                                    tint = Color(0xFFFFC107),
+                                    modifier = Modifier.padding(4.dp).fillMaxSize()
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 3. SELECTION POPUP
+                if (selectionRect != null && !textFieldValue.selection.collapsed) {
+                    // Position popup above the selection
+                    Popup(
+                        alignment = Alignment.TopStart,
+                        offset = IntOffset(
+                            x = selectionRect!!.center.x.toInt(),
+                            y = with(LocalDensity.current){selectionRect!!.top.toInt() - 60.dp.toPx().toInt()}
+                        ),
+                        onDismissRequest = { selectionRect = null }
+                    ) {
+                        SelectionToolbarContent(
+                            onCopy = {
+                                val selectedText = textContent?.substring(textFieldValue.selection.start, textFieldValue.selection.end) ?: ""
+                                clipboardManager.setText(AnnotatedString(selectedText))
+                                selectionRect = null
+                                // Clear selection visually
+                                textFieldValue = textFieldValue.copy(selection = TextRange.Zero)
+                            },
+                            onNote = { showNoteDialog = true }
+                        )
+                    }
+                }
+            }
+        }
+
+        // 4. DIALOGS
+        if (showNoteDialog) {
+            NoteInputDialog(
+                onDismiss = { showNoteDialog = false },
+                onConfirm = { noteText ->
+                    textContent?.let { text ->
+                        viewModel.saveTextModeNote(pageIndex, text, textFieldValue.selection, noteText)
+                    }
+                    showNoteDialog = false
+                    selectionRect = null
+                    textFieldValue = textFieldValue.copy(selection = TextRange.Zero)
+                }
+            )
+        }
+
+        if (clickedNoteContent != null) {
+            AlertDialog(
+                onDismissRequest = { clickedNoteContent = null },
+                title = { Text("Note") },
+                text = { Text(clickedNoteContent!!) },
+                confirmButton = { TextButton(onClick = { clickedNoteContent = null }) { Text("Close") } }
+            )
+        }
+        return // END TEXT MODE
     }
 
     val currentBitmap = bitmap ?: run {
@@ -497,9 +674,11 @@ fun PdfPageItem(
             val w = size.width
             val h = size.height
 
-            // A. Highlights
             pageNotes.forEach { note ->
-                note.getRects().forEach { rect ->
+                // USE THE CALCULATED MAP INSTEAD OF note.getRects()
+                val rects = noteRectsMap[note.id] ?: emptyList()
+
+                rects.forEach { rect ->
                     drawRect(
                         color = Color(0x66FFEB3B),
                         topLeft = Offset(rect.left * w, rect.top * h),
@@ -551,7 +730,9 @@ fun PdfPageItem(
         // 3. NOTE BUTTON (SCALED)
         if (currentBitmap != null) {
             pageNotes.forEach { note ->
-                val firstRect = note.getRects().firstOrNull()
+                // USE THE MAP HERE TOO
+                val rects = noteRectsMap[note.id] ?: emptyList()
+                val firstRect = rects.firstOrNull()
                 if (firstRect != null) {
                     val iconX = firstRect.left * layoutSize.width
 
@@ -572,7 +753,9 @@ fun PdfPageItem(
                             imageVector = Icons.Default.Comment,
                             contentDescription = "Note",
                             tint = Color(0xFFFFC107),
-                            modifier = Modifier.padding((4.dp / currentZoom)).fillMaxSize()
+                            modifier = Modifier
+                                .padding((4.dp / currentZoom))
+                                .fillMaxSize()
                         )
                     }
                 }
@@ -988,5 +1171,34 @@ fun PageIndicator(currentPage: Int, totalPages: Int, modifier: Modifier = Modifi
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
             style = MaterialTheme.typography.labelMedium
         )
+    }
+}
+class CustomTextToolbar(
+    private val onShowMenu: (Rect) -> Unit,
+    private val onHideMenu: () -> Unit,
+    private val onCopy: () -> Unit
+) : TextToolbar {
+
+    override val status: TextToolbarStatus
+        get() = if (shown) TextToolbarStatus.Shown else TextToolbarStatus.Hidden
+
+    private var shown = false
+
+    override fun showMenu(
+        rect: Rect,
+        onCopyRequested: (() -> Unit)?,
+        onPasteRequested: (() -> Unit)?,
+        onCutRequested: (() -> Unit)?,
+        onSelectAllRequested: (() -> Unit)?
+    ) {
+        shown = true
+        // Pass the selection Rect up to the UI to position the Popup
+        onShowMenu(rect)
+        // We capture the system copy request if needed, or we handle it ourselves
+    }
+
+    override fun hide() {
+        shown = false
+        onHideMenu()
     }
 }

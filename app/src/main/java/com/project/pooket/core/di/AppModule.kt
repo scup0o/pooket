@@ -35,9 +35,5 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideAnnotationDao(db: AppDatabase) = db.annotationDao()
-
-    @Provides
-    @Singleton
     fun provideNoteDao(db: AppDatabase) = db.noteDao()
 }
