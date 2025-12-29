@@ -3,17 +3,22 @@ package com.project.pooket.ui.features.reader
 import android.graphics.Bitmap
 import androidx.compose.animation.*
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.relocation.BringIntoViewResponder
+import androidx.compose.foundation.relocation.bringIntoViewResponder
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -52,6 +57,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -100,6 +106,9 @@ fun ReaderScreen(
     //ui-controller
     var showControls by remember { mutableStateOf(true) }
 
+    val selectedText by viewModel.currentSelectionText.collectAsStateWithLifecycle()
+    val clipboardManager = LocalClipboardManager.current
+
 
     LaunchedEffect(bookUri) { viewModel.loadPdf(bookUri) }
 
@@ -132,6 +141,8 @@ fun ReaderScreen(
 
     val notes by viewModel.notes.collectAsStateWithLifecycle()
     var showNotesSheet by remember { mutableStateOf(false) }
+    var showNoteDialog by remember { mutableStateOf(false) }
+
 
     // Load notes initially
     LaunchedEffect(bookUri) {
@@ -360,6 +371,21 @@ fun ReaderScreen(
                     )
                 }
             }
+            AnimatedVisibility(
+                visible = selectedText != null,
+                enter = slideInVertically { -it } + fadeIn(),
+                exit = slideOutVertically { -it } + fadeOut(),
+                modifier = Modifier.align(Alignment.TopCenter)
+            ) {
+                SelectionControlBar(
+                    onCopy = {
+                        selectedText?.let { clipboardManager.setText(AnnotatedString(it)) }
+                        viewModel.clearAllSelection()
+                    },
+                    onNote = { showNoteDialog = true },
+                    onClose = { viewModel.clearAllSelection() }
+                )
+            }
         }
     }
     if (showNotesSheet) {
@@ -377,8 +403,67 @@ fun ReaderScreen(
             onDismiss = { showNotesSheet = false }
         )
     }
+    if (showNoteDialog) {
+        NoteInputDialog(
+            onDismiss = { showNoteDialog = false },
+            onConfirm = { noteText ->
+                // Check which mode is active to save correctly
+                if (viewModel.selectionState.value != null) {
+                    viewModel.saveCurrentSelectionAsNote(noteText) // Image Mode
+                } else if (viewModel.textSelection.value != null) {
+                    viewModel.saveTextModeNote(noteText) // Text Mode
+                }
+                showNoteDialog = false
+            }
+        )
+    }
 }
 
+// --- NEW COMPOSABLE: The Floating Bar ---
+@Composable
+fun SelectionControlBar(
+    onCopy: () -> Unit,
+    onNote: () -> Unit,
+    onClose: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        shape = RoundedCornerShape(12.dp),
+        shadowElevation = 8.dp,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest, // Distinct color
+        tonalElevation = 6.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                "Text Selected",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onCopy) {
+                    Icon(Icons.Default.ContentCopy, "Copy")
+                }
+                IconButton(onClick = onNote) {
+                    Icon(Icons.Default.Edit, "Note")
+                }
+                VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 8.dp))
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Default.Close, "Close")
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PdfPageItem(
     pageIndex: Int,
@@ -389,105 +474,71 @@ fun PdfPageItem(
     fontSize: Float,
     currentZoom: Float
 ) {
-    var bitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var textContent by remember { mutableStateOf<String?>(null) }
-
-
-    //text
-    var textFieldValue by remember(pageIndex, isTextMode) { mutableStateOf(TextFieldValue()) }
-
-
-
-
-    //image
-    val selection by viewModel.selectionState.collectAsStateWithLifecycle()
     val allNotes by viewModel.notes.collectAsStateWithLifecycle()
     val pageNotes = remember(allNotes, pageIndex) { allNotes.filter { it.pageIndex == pageIndex } }
+    var clickedNoteContent by remember { mutableStateOf<String?>(null) }
 
-    var showNoteDialog by remember { mutableStateOf(false) }
-    var clickedNoteContent by remember { mutableStateOf<String?>(null) } // For showing existing note
-
-    val clipboardManager = LocalClipboardManager.current
-    var containerSize by remember { mutableStateOf(Size.Zero) }
-
-    LaunchedEffect(pageIndex, isTextMode) {
-        if (isTextMode) {
-            if (textContent == null) {
-                val raw = viewModel.extractText(pageIndex)
-                textContent = raw
-                // Initial load
-                textFieldValue = TextFieldValue(viewModel.processTextHighlights(raw, pageNotes))
-            }
-        } else {
-            if (bitmap == null) {
-                bitmap = viewModel.renderPage(pageIndex)
-            }
-        }
-    }
-    var noteRectsMap by remember { mutableStateOf<Map<Long, List<NormRect>>>(emptyMap()) }
-
-    // CRITICAL: Add 'isTextMode' to keys to force refresh if needed
-    // CRITICAL: Use LaunchedEffect correctly
-    LaunchedEffect(pageNotes, isTextMode) {
-        // Run calculation in background
-        withContext(Dispatchers.Default) {
-            val newMap = mutableMapOf<Long, List<NormRect>>()
-
-            pageNotes.forEach { note ->
-                // If it already has rects (Image Mode created), this is fast.
-                // If it needs calculation (Text Mode created), this runs the Fuzzy Search.
-                newMap[note.id] = viewModel.getRectsForNote(note)
-            }
-
-            // Update UI on Main Thread
-            withContext(Dispatchers.Main) {
-                noteRectsMap = newMap
-            }
-        }
-    }
-
-    LaunchedEffect(pageNotes) {
-        if (textContent != null) {
-            val annotated = viewModel.processTextHighlights(textContent!!, pageNotes)
-            // Preserve current selection if any
-            textFieldValue = textFieldValue.copy(annotatedString = annotated)
-        }
-    }
-
-    // --- TEXT MODE RENDER ---
+    // --- TEXT MODE LOGIC ---
     if (isTextMode) {
-        // State for Custom Toolbar
-        var selectionRect by remember { mutableStateOf<Rect?>(null) }
-        var showNoteDialog by remember { mutableStateOf(false) }
-        val clipboardManager = LocalClipboardManager.current
+        var textContent by remember { mutableStateOf<String?>(null) }
+        var textFieldValue by remember(pageIndex, isTextMode) { mutableStateOf(TextFieldValue()) }
+        var layoutResult by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
+        val textSelection by viewModel.textSelection.collectAsStateWithLifecycle()
 
-        // Custom Toolbar Implementation
+        // Sync ViewModel -> Local
+        LaunchedEffect(textSelection) {
+            if (textSelection == null && !textFieldValue.selection.collapsed) {
+                textFieldValue = textFieldValue.copy(selection = TextRange.Zero)
+            }
+        }
+
+        // Load Text
+        LaunchedEffect(pageIndex, pageNotes) {
+            if (textContent == null) textContent = viewModel.extractText(pageIndex)
+            textContent?.let { raw ->
+                val annotated = viewModel.processTextHighlights(raw, pageNotes)
+                if (textFieldValue.text != raw) textFieldValue = TextFieldValue(annotated)
+                else textFieldValue = textFieldValue.copy(annotatedString = annotated)
+            }
+        }
+
+        // 1. SCROLL FIX: Prevent LazyColumn from scrolling when TextField is focused
+        val bringIntoViewResponder = remember {
+            object : BringIntoViewResponder {
+                override fun calculateRectForParent(localRect: Rect): Rect {
+                    // Tell parent the item is "already visible" so it doesn't scroll
+                    return Rect.Zero
+                }
+                override suspend fun bringChildIntoView(localRect: () -> Rect?) {
+                    // Do nothing
+                }
+            }
+        }
+
         val customToolbar = remember {
             CustomTextToolbar(
-                onShowMenu = { rect -> selectionRect = rect },
-                onHideMenu = { selectionRect = null },
-                onCopy = {
-                    // Manual copy handled in popup
-                }
+                onShowMenu = {
+                    val sel = textFieldValue.selection
+                    if (!sel.collapsed && textContent != null) {
+                        try {
+                            val selectedText = textContent!!.substring(sel.start, sel.end)
+                            viewModel.setTextSelection(pageIndex, selectedText, sel)
+                        } catch (_: Exception) {}
+                    }
+                },
+                onHideMenu = { },
+                onCopy = { }
             )
         }
 
-        // Layout Map for Icons
-        var layoutResult by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
-        var clickedNoteContent by remember { mutableStateOf<String?>(null) }
-
-        // Intercept the LocalTextToolbar
-        CompositionLocalProvider(
-            LocalTextToolbar provides customToolbar
-        ) {
+        CompositionLocalProvider(LocalTextToolbar provides customToolbar) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 24.dp)
-                    // Allow vertical scrolling for the page text
+                    // Only scroll internally if NOT in Vertical Mode (LazyColumn handles Vertical)
                     .then(if (!isVerticalMode) Modifier.verticalScroll(rememberScrollState()) else Modifier)
             ) {
-                // 1. THE TEXT (Read-Only Field)
                 if (textContent == null) {
                     Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
@@ -495,149 +546,92 @@ fun PdfPageItem(
                 } else {
                     BasicTextField(
                         value = textFieldValue,
-                    onValueChange = { newValue ->
-                        // Only allow selection changes, forbid text editing
-                        if (newValue.annotatedString.text == textFieldValue.annotatedString.text) {
-                            textFieldValue = newValue
-                        }
-                    },
-                    readOnly = true, // Enables native selection but no keyboard
-                    textStyle = TextStyle(
-                        fontSize = fontSize.sp,
-                        lineHeight = (fontSize * 1.5).sp,
-                        color = if (isNightMode) Color.LightGray else Color.Black,
-                        textAlign = TextAlign.Justify
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                    onTextLayout = { layoutResult = it }
-                )}
+                        onValueChange = { if (it.text == textFieldValue.text) textFieldValue = it },
+                        readOnly = true,
+                        textStyle = TextStyle(
+                            fontSize = fontSize.sp,
+                            lineHeight = (fontSize * 1.5).sp,
+                            color = if (isNightMode) Color.LightGray else Color.Black,
+                            textAlign = TextAlign.Justify
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            // APPLY THE FIX HERE
+                            .bringIntoViewResponder(bringIntoViewResponder),
+                        onTextLayout = { layoutResult = it }
+                    )
 
-                // 2. NOTE ICONS (Overlay)
-                if (layoutResult != null) {
-                    pageNotes.forEach { note ->
-                        if (note.textRangeStart != null) {
-                            // Calculate position based on the START index of the note
-                            val bounds = layoutResult!!.getBoundingBox(note.textRangeStart)
-                            // Position icon at top-left of the text line
-                            val iconX = bounds.left
-                            val iconY = with(LocalDensity.current){bounds.top - 24.dp.toPx()}
-
-                            Box(
-                                modifier = Modifier
-                                    .offset { IntOffset(iconX.toInt(), iconY.toInt()) }
-                                    .size(24.dp)
-                                    .background(Color.White, androidx.compose.foundation.shape.CircleShape)
-                                    .shadow(1.dp, androidx.compose.foundation.shape.CircleShape)
-                                    .clickable { clickedNoteContent = note.noteContent }
-                            ) {
-                                Icon(
-                                    Icons.Default.Comment, "Note",
-                                    tint = Color(0xFFFFC107),
-                                    modifier = Modifier.padding(4.dp).fillMaxSize()
-                                )
+                    // Icons overlay... (Same as before)
+                    if (layoutResult != null) {
+                        pageNotes.forEach { note ->
+                            if (note.textRangeStart != null) {
+                                    val bounds = layoutResult!!.getBoundingBox(note.textRangeStart)
+                                    val iconX = bounds.left
+                                    val iconY = bounds.top - 24.dp.toPx(LocalDensity.current)
+                                    NoteIcon(iconX, iconY, 24.dp, onClick = { clickedNoteContent = note.noteContent })
                             }
                         }
-                    }
-                }
-
-                // 3. SELECTION POPUP
-                if (selectionRect != null && !textFieldValue.selection.collapsed) {
-                    // Position popup above the selection
-                    Popup(
-                        alignment = Alignment.TopStart,
-                        offset = IntOffset(
-                            x = selectionRect!!.center.x.toInt(),
-                            y = with(LocalDensity.current){selectionRect!!.top.toInt() - 60.dp.toPx().toInt()}
-                        ),
-                        onDismissRequest = { selectionRect = null }
-                    ) {
-                        SelectionToolbarContent(
-                            onCopy = {
-                                val selectedText = textContent?.substring(textFieldValue.selection.start, textFieldValue.selection.end) ?: ""
-                                clipboardManager.setText(AnnotatedString(selectedText))
-                                selectionRect = null
-                                // Clear selection visually
-                                textFieldValue = textFieldValue.copy(selection = TextRange.Zero)
-                            },
-                            onNote = { showNoteDialog = true }
-                        )
                     }
                 }
             }
         }
 
-        // 4. DIALOGS
-        if (showNoteDialog) {
-            NoteInputDialog(
-                onDismiss = { showNoteDialog = false },
-                onConfirm = { noteText ->
-                    textContent?.let { text ->
-                        viewModel.saveTextModeNote(pageIndex, text, textFieldValue.selection, noteText)
-                    }
-                    showNoteDialog = false
-                    selectionRect = null
-                    textFieldValue = textFieldValue.copy(selection = TextRange.Zero)
-                }
-            )
-        }
-
         if (clickedNoteContent != null) {
-            AlertDialog(
-                onDismissRequest = { clickedNoteContent = null },
-                title = { Text("Note") },
-                text = { Text(clickedNoteContent!!) },
-                confirmButton = { TextButton(onClick = { clickedNoteContent = null }) { Text("Close") } }
-            )
+            NoteContentDialog(content = clickedNoteContent!!) { clickedNoteContent = null }
         }
-        return // END TEXT MODE
+        return
+    }
+
+    // --- IMAGE MODE LOGIC (Unchanged from previous correct version) ---
+    var bitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var layoutSize by remember { mutableStateOf(Size.Zero) }
+    var noteRectsMap by remember { mutableStateOf<Map<Long, List<NormRect>>>(emptyMap()) }
+
+    LaunchedEffect(pageNotes, isTextMode) {
+        withContext(Dispatchers.Default) {
+            val newMap = mutableMapOf<Long, List<NormRect>>()
+            pageNotes.forEach { note -> newMap[note.id] = viewModel.getRectsForNote(note) }
+            withContext(Dispatchers.Main) { noteRectsMap = newMap }
+        }
+    }
+
+    LaunchedEffect(pageIndex) {
+        if (bitmap == null) bitmap = viewModel.renderPage(pageIndex)
     }
 
     val currentBitmap = bitmap ?: run {
-        Box(Modifier
-            .fillMaxWidth()
-            .height(400.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
         }
         return
     }
 
-    // Calculate Aspect Ratio of the PDF Page
     val pdfAspectRatio = currentBitmap.width.toFloat() / currentBitmap.height.toFloat()
-    var layoutSize by remember { mutableStateOf(Size.Zero) }
+    val selection by viewModel.selectionState.collectAsStateWithLifecycle()
 
-    // Main Container
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(pdfAspectRatio)
             .background(if (isNightMode) Color.Black else Color.White)
             .onGloballyPositioned { layoutSize = it.size.toSize() }
-            // CRITICAL FIX: Only restart gesture if pageIndex changes.
-            // Do NOT put 'selection' here, or dragging will break.
             .pointerInput(pageIndex) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-
-                    // ACCESS STATE INSIDE THE GESTURE (Live Check)
-                    val currentSelection = viewModel.selectionState.value
-
-                    val handleHit = if (currentSelection?.pageIndex == pageIndex) {
-                        viewModel.checkHandleHitUI(down.position, layoutSize, currentSelection)
+                    val currentSel = viewModel.selectionState.value
+                    val handleHit = if (currentSel?.pageIndex == pageIndex) {
+                        viewModel.checkHandleHitUI(down.position, layoutSize, currentSel)
                     } else DragHandle.NONE
 
                     if (handleHit != DragHandle.NONE) {
-                        // --- DRAG HANDLE ---
                         down.consume()
                         viewModel.setDraggingHandle(handleHit)
-
                         drag(down.id) { change ->
                             change.consume()
-                            // Live update without killing gesture
                             viewModel.onDrag(change.position, layoutSize)
                         }
                         viewModel.onDragEnd()
                     } else {
-                        // --- SELECTION / LONG PRESS ---
                         try {
                             withTimeout(500) {
                                 waitForUpOrCancellation()
@@ -645,7 +639,6 @@ fun PdfPageItem(
                             }
                         } catch (e: PointerEventTimeoutCancellationException) {
                             viewModel.onLongPress(pageIndex, down.position, layoutSize)
-                            // Allow immediate drag after creation
                             drag(down.id) { change ->
                                 change.consume()
                                 viewModel.onDrag(change.position, layoutSize)
@@ -669,226 +662,162 @@ fun PdfPageItem(
             ))) else null
         )
 
-        // 2. CANVAS (Handles & Highlights)
         Canvas(modifier = Modifier.matchParentSize()) {
             val w = size.width
             val h = size.height
 
+            // Draw Notes
             pageNotes.forEach { note ->
-                // USE THE CALCULATED MAP INSTEAD OF note.getRects()
                 val rects = noteRectsMap[note.id] ?: emptyList()
-
                 rects.forEach { rect ->
-                    drawRect(
-                        color = Color(0x66FFEB3B),
-                        topLeft = Offset(rect.left * w, rect.top * h),
-                        size = Size((rect.right - rect.left) * w, (rect.bottom - rect.top) * h)
-                    )
+                    drawRect(Color(0x66FFEB3B), Offset(rect.left * w, rect.top * h), Size((rect.right - rect.left) * w, (rect.bottom - rect.top) * h))
                 }
             }
 
-            // B. Selection
+            // Draw Selection
             if (selection?.pageIndex == pageIndex) {
                 val rects = selection!!.rects
                 rects.forEach { rect ->
-                    drawRect(
-                        color = Color(0x4D2196F3),
-                        topLeft = Offset(rect.left * w, rect.top * h),
-                        size = Size((rect.right - rect.left) * w, (rect.bottom - rect.top) * h)
-                    )
+                    drawRect(Color(0x4D2196F3), Offset(rect.left * w, rect.top * h), Size((rect.right - rect.left) * w, (rect.bottom - rect.top) * h))
                 }
-
-                // C. WATERDROP HANDLES (SCALED)
                 if (rects.isNotEmpty()) {
-                    // Sort rects by Y to be safe, though VM should return them sorted
                     val sortedRects = rects.sortedBy { it.top }
-                    val firstLine = sortedRects.first()
-                    val lastLine = sortedRects.last()
-
-                    val baseRadius = 10.dp.toPx()
+                    val first = sortedRects.first()
+                    val last = sortedRects.last()
+                    val baseRadius = 12.dp.toPx()
                     val scaledRadius = baseRadius / currentZoom
-
-                    // Start Handle -> Left of First Line
-                    drawWaterdropHandle(
-                        x = firstLine.left * w,
-                        y = firstLine.bottom * h, // Draw at bottom of line 1
-                        radius = scaledRadius,
-                        isLeft = true
-                    )
-
-                    // End Handle -> Right of Last Line
-                    drawWaterdropHandle(
-                        x = lastLine.right * w,
-                        y = lastLine.bottom * h, // Draw at bottom of line N
-                        radius = scaledRadius,
-                        isLeft = false
-                    )
+                    drawAndroidSelectionHandle(first.left * w, first.bottom * h, scaledRadius, true)
+                    drawAndroidSelectionHandle(last.right * w, last.bottom * h, scaledRadius, false)
                 }
             }
         }
 
-        // 3. NOTE BUTTON (SCALED)
-        if (currentBitmap != null) {
+        if (layoutSize != Size.Zero) {
             pageNotes.forEach { note ->
-                // USE THE MAP HERE TOO
                 val rects = noteRectsMap[note.id] ?: emptyList()
-                val firstRect = rects.firstOrNull()
-                if (firstRect != null) {
-                    val iconX = firstRect.left * layoutSize.width
-
-                    // INVERSE SCALE for Offset and Size
-                    val buttonSize = 24.dp / currentZoom
-                    val paddingOffset = 2.dp / currentZoom // slight padding
-                    val iconY = with(LocalDensity.current){(firstRect.top * layoutSize.height) - buttonSize.toPx() - paddingOffset.toPx()}
-
-                    Box(
-                        modifier = Modifier
-                            .offset { IntOffset(iconX.toInt(), iconY.toInt()) }
-                            .size(buttonSize) // Scaled size
-                            .shadow(1.dp, androidx.compose.foundation.shape.CircleShape)
-                            .background(Color.White, androidx.compose.foundation.shape.CircleShape)
-                            .clickable { clickedNoteContent = note.noteContent }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Comment,
-                            contentDescription = "Note",
-                            tint = Color(0xFFFFC107),
-                            modifier = Modifier
-                                .padding((4.dp / currentZoom))
-                                .fillMaxSize()
-                        )
-                    }
+                val first = rects.firstOrNull()
+                if (first != null) {
+                    val iconX = first.left * layoutSize.width
+                    val baseSize = 24.dp
+                    val scaledSize = baseSize / currentZoom
+                    val padding = 2.dp / currentZoom
+                    val iconY = (first.top * layoutSize.height) - scaledSize.toPx(LocalDensity.current) - padding.toPx(LocalDensity.current)
+                    NoteIcon(iconX, iconY, scaledSize, 4.dp / currentZoom) { clickedNoteContent = note.noteContent }
                 }
             }
         }
-
-        // 4. SELECTION TOOLBAR (SCALED POSITION)
-        if (selection?.pageIndex == pageIndex) {
-            // ALWAYS use the FIRST rect (the top line of selection)
-            val topRect = selection!!.rects.firstOrNull()
-
-            if (topRect != null && layoutSize != Size.Zero) {
-                val density = LocalDensity.current
-
-                // Gap Calculation:
-                // We want a visual gap of 60dp.
-                // Because we are inside a scaled container, we must divide by zoom.
-                val visualGap = 60.dp
-                val scaledGapPx = with(density) { visualGap.toPx() } / currentZoom
-
-                // Position X: Center of the TOP line
-                val centerX = ((topRect.left + topRect.right) / 2 * layoutSize.width).toInt()
-
-                // Position Y: Top of the TOP line minus gap
-                val topY = (topRect.top * layoutSize.height).toInt() - scaledGapPx.toInt()
-
-                Popup(
-                    alignment = Alignment.TopStart,
-                    offset = IntOffset(centerX, topY)
-                ) {
-                    // Inverse scale the toolbar CONTENT so it stays readable size
-                    // If zoom is 2.5x, the popup context might be scaled.
-                    // To be safe, we don't scale the content size, just the position.
-                    // But if your Toolbar looks tiny, wrap it in Box(Modifier.scale(1f/currentZoom))
-
-                    SelectionToolbarContent(
-                        onCopy = {
-                            clipboardManager.setText(AnnotatedString(selection!!.selectedText))
-                            viewModel.clearSelection()
-                        },
-                        onNote = { showNoteDialog = true }
-                    )
-                }
-            }
-        }
-    }
-
-    // DIALOGS
-    if (showNoteDialog) {
-        NoteInputDialog(
-            onDismiss = { showNoteDialog = false },
-            onConfirm = { text ->
-                viewModel.saveCurrentSelectionAsNote(text)
-                showNoteDialog = false
-            }
-        )
     }
 
     if (clickedNoteContent != null) {
-        AlertDialog(
-            onDismissRequest = { clickedNoteContent = null },
-            title = { Text("Note") },
-            text = { Text(clickedNoteContent!!) },
-            confirmButton = {
-                TextButton(onClick = {
-                    clickedNoteContent = null
-                }) { Text("Close") }
-            }
+        NoteContentDialog(content = clickedNoteContent!!) { clickedNoteContent = null }
+    }
+}
+
+// --- HELPER COMPOSABLES & EXTENSIONS ---
+
+@Composable
+fun NoteIcon(
+    x: Float,
+    y: Float,
+    size: Dp,
+    iconPadding: Dp = 4.dp,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .offset { IntOffset(x.toInt(), y.toInt()) }
+            .size(size)
+            .shadow(1.dp, CircleShape)
+            .background(Color.White, CircleShape)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null, // Disable ripple for cleaner look on small icons
+                onClick = onClick
+            )
+    ) {
+        Icon(
+            imageVector = Icons.Default.Comment,
+            contentDescription = "Note",
+            tint = Color(0xFFFFC107),
+            modifier = Modifier
+                .padding(iconPadding)
+                .fillMaxSize()
         )
     }
-
-//    Box(
-//        modifier = Modifier
-//            .fillMaxWidth()
-//            .then(if (isVerticalMode) Modifier.wrapContentHeight() else Modifier.fillMaxSize())
-//            .background(if (isNightMode) Color.Black else Color.White),
-//        contentAlignment = Alignment.TopStart
-//    ) {
-//        if (isTextMode) {
-//            SelectionContainer {
-//                Text(
-//                    text = textContent ?: "Extracting text...",
-//                    fontSize = fontSize.sp,
-//                    lineHeight = (fontSize * 1.5f).sp,
-//                    color = if (isNightMode) Color.LightGray else Color.Black,
-//                    modifier = Modifier
-//                        .fillMaxWidth()
-//                        .padding(24.dp)
-//                        .then(if (!isVerticalMode) Modifier.verticalScroll(rememberScrollState()) else Modifier)
-//                )
-//            }
-//        } else {
-//            val currentBitmap = bitmap
-//            if (currentBitmap != null) {
-//                Image(
-//                    bitmap = currentBitmap.asImageBitmap(),
-//                    contentDescription = null,
-//                    contentScale = if (isVerticalMode) ContentScale.FillWidth else ContentScale.Fit,
-//                    modifier = Modifier.fillMaxWidth(),
-//                    colorFilter = if (isNightMode) ColorFilter.colorMatrix(ColorMatrix(floatArrayOf(
-//                        -1f, 0f, 0f, 0f, 255f,
-//                        0f, -1f, 0f, 0f, 255f,
-//                        0f, 0f, -1f, 0f, 255f,
-//                        0f, 0f, 0f, 1f, 0f
-//                    ))) else null
-//                )
-//            } else {
-//                Box(Modifier.fillMaxWidth().height(450.dp), contentAlignment = Alignment.Center) {
-//                    CircularProgressIndicator(Modifier.size(30.dp), strokeWidth = 2.dp)
-//                }
-//            }
-//        }
-//    }
 }
 
-fun androidx.compose.ui.graphics.drawscope.DrawScope.drawWaterdropHandle(x: Float, y: Float, radius: Float, isLeft: Boolean) {
+@Composable
+fun NoteContentDialog(content: String, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Note") },
+        text = { Text(content) },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }
+    )
+}
+
+fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAndroidSelectionHandle(
+    x: Float,
+    y: Float,
+    radius: Float,
+    isLeft: Boolean
+) {
     val color = Color(0xFF2196F3)
+    val path = androidx.compose.ui.graphics.Path()
 
-    // Draw line
-    drawLine(
-        color = color,
-        start = Offset(x, y - (radius * 1.5f)),
-        end = Offset(x, y + (radius * 0.5f)),
-        strokeWidth = (2.dp.toPx() / (radius / 10.dp.toPx())) // Scale stroke slightly or keep thin
-    )
+    // Android handle geometry:
+    // It's a circle at the bottom, with a triangle connecting it to the cursor point (x,y).
+    // Center of the circle:
+    val circleCenterY = y + radius // Circle sits below the line
+    val circleCenterX = if (isLeft) x - (radius * 0.5f) else x + (radius * 0.5f)
+    // ^ Shift circle slightly outward for better visibility
 
-    // Draw Drop
-    drawCircle(
-        color = color,
-        radius = radius,
-        center = Offset(x, y + (radius * 0.8f))
-    )
+    // Let's draw a nice fluid teardrop path
+    path.moveTo(x, y) // The tip at the text line
+
+    if (isLeft) {
+        // Left Handle (Curved bulge to the left)
+        // Curve down to the circle
+        path.quadraticBezierTo(
+            x - radius, y + (radius * 0.5f), // Control point
+            x - radius, y + radius           // Start of circle arc
+        )
+        // Bottom arc
+        path.arcTo(
+            rect = Rect(
+                center = Offset(x - (radius * 0.8f), y + radius), // Shifted center
+                radius = radius
+            ),
+            startAngleDegrees = 135f,
+            sweepAngleDegrees = 270f,
+            forceMoveTo = false
+        )
+        // Close back to tip
+        path.lineTo(x, y)
+    } else {
+        // Right Handle (Curved bulge to the right)
+        path.quadraticBezierTo(
+            x + radius, y + (radius * 0.5f),
+            x + radius, y + radius
+        )
+        path.arcTo(
+            rect = Rect(
+                center = Offset(x + (radius * 0.8f), y + radius),
+                radius = radius
+            ),
+            startAngleDegrees = 135f, // Approx angles for visual shape
+            sweepAngleDegrees = -270f,
+            forceMoveTo = false
+        )
+        path.lineTo(x, y)
+    }
+
+    drawPath(path, color)
 }
+
+@Composable
+fun Dp.toPx(density: androidx.compose.ui.unit.Density) = with(density) { this@toPx.toPx() }
+
 @Composable
 fun SelectionToolbarContent(onCopy: () -> Unit, onNote: () -> Unit) {
     // Centering Hack: Shift left by 50% of approximate width (60dp)
