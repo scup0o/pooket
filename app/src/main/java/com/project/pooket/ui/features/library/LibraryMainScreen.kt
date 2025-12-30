@@ -41,7 +41,7 @@ fun LibraryMainScreen(
     viewModel: LibraryMainViewModel = hiltViewModel()
 ) {
     val books by viewModel.books.collectAsStateWithLifecycle()
-    val recentBook by viewModel.recentBook.collectAsStateWithLifecycle() // Observe Recent
+    val recentBook by viewModel.recentBook.collectAsStateWithLifecycle()
 
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
