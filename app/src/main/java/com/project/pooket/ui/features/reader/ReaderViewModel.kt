@@ -39,6 +39,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import java.io.ByteArrayOutputStream
 import java.io.OutputStreamWriter
+import kotlin.math.abs
+import kotlin.math.sqrt
+
 enum class DragHandle { NONE, START, END }
 
 @HiltViewModel
@@ -241,23 +244,30 @@ class ReaderViewModel @Inject constructor(
     private val _notes = MutableStateFlow<List<NoteEntity>>(emptyList())
     val notes = _notes.asStateFlow()
 
-    // Holds the cached word positions for pages we've touched
     private val pageCharsCache = mutableMapOf<Int, List<PdfChar>>()
 
-    // Selection State
+    // --- Image Mode Selection State ---
     data class SelectionState(
         val pageIndex: Int,
         val startWordIndex: Int,
         val endWordIndex: Int,
         val selectedText: String,
         val rects: List<NormRect>,
-        val activeHandle: DragHandle = DragHandle.NONE // Track what we are dragging
+        val activeHandle: DragHandle = DragHandle.NONE
     )
-
     private val _selectionState = MutableStateFlow<SelectionState?>(null)
     val selectionState = _selectionState.asStateFlow()
 
-    // 1. Observe notes when book loads
+    // --- Text Mode Selection State ---
+    data class TextSelectionState(
+        val pageIndex: Int,
+        val text: String,
+        val range: TextRange
+    )
+    private val _textSelection = MutableStateFlow<TextSelectionState?>(null)
+    val textSelection = _textSelection.asStateFlow()
+
+
     fun loadNotes(uri: String) {
         viewModelScope.launch {
             noteRepository.getNotes(uri).collect {
@@ -266,34 +276,67 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    // --- FIX 2: Helper to check handle touch without modifying state yet ---
-    fun isTouchingHandle(pageIndex: Int, point: Offset, viewSize: Size): Boolean {
-        val current = _selectionState.value ?: return false
-        if (current.pageIndex != pageIndex) return false
+    // ----------------------------------------------------------------------
+    // 1. UNIFIED SAVE FUNCTION
+    // ----------------------------------------------------------------------
+    fun saveNote(noteContent: String) {
+        val uri = currentBookUri ?: return
 
-        val normPoint = Offset(point.x / viewSize.width, point.y / viewSize.height)
-        val rects = current.rects
-        if (rects.isEmpty()) return false
+        viewModelScope.launch {
+            var noteEntity: NoteEntity? = null
 
-        val startRect = rects.first()
-        val endRect = rects.last()
+            if (_isTextMode.value) {
+                // TEXT MODE LOGIC
+                // We map the selected text -> Image Mode Rects
+                val sel = _textSelection.value
+                if (sel != null && !sel.range.collapsed) {
 
-        // Threshold: 8% of the screen dimension approx
-        val threshold = 0.08f
+                    // A. Use Image Mode logic to find visual coordinates for this text
+                    val rects = findRectsForText(sel.pageIndex, sel.text)
 
-        val startDist = distance(normPoint, startRect.left, startRect.bottom, 1f)
-        val endDist = distance(normPoint, endRect.right, endRect.bottom, 1f)
+                    // B. Save with BOTH:
+                    //    1. Rects (for Image Mode display)
+                    //    2. TextRange (for fast Text Mode display)
+                    noteEntity = NoteEntity.fromRects(
+                        bookUri = uri,
+                        rects = rects,
+                        page = sel.pageIndex,
+                        text = sel.text,
+                        note = noteContent
+                    ).copy(
+                        textRangeStart = sel.range.start,
+                        textRangeEnd = sel.range.end
+                    )
+                }
+            } else {
+                // IMAGE MODE LOGIC
+                // We already have the rects in the selection state
+                val sel = _selectionState.value
+                if (sel != null) {
+                    noteEntity = NoteEntity.fromRects(
+                        bookUri = uri,
+                        page = sel.pageIndex,
+                        text = sel.selectedText,
+                        note= noteContent,
+                        rects = sel.rects
+                    )
+                }
+            }
 
-        return startDist < threshold || endDist < threshold
+            if (noteEntity != null) {
+                noteRepository.addNote(noteEntity)
+                clearAllSelection()
+            }
+        }
     }
 
-    // Call this inside loadPdf() after currentBookUri is set
-    // loadNotes(uriString)
 
-    // 2. Extract words with coordinates (Lazy loaded)
+    // ----------------------------------------------------------------------
+    // 2. CORE COORDINATE LOGIC (Reusable for Syncing)
+    // ----------------------------------------------------------------------
+
     suspend fun getPageChars(pageIndex: Int): List<PdfChar> = withContext(Dispatchers.IO) {
         if (pageCharsCache.containsKey(pageIndex)) return@withContext pageCharsCache[pageIndex]!!
-
         rendererMutex.withLock {
             try {
                 if (pdDocument == null && currentBookUri != null) {
@@ -302,12 +345,10 @@ class ReaderViewModel @Inject constructor(
                 }
                 val doc = pdDocument ?: return@withLock emptyList()
                 val page = doc.getPage(pageIndex)
-
                 val stripper = CoordinateTextStripper(page)
                 stripper.startPage = pageIndex + 1
                 stripper.endPage = pageIndex + 1
                 stripper.writeText(doc, OutputStreamWriter(ByteArrayOutputStream()))
-
                 pageCharsCache[pageIndex] = stripper.chars
                 stripper.chars
             } catch (e: Exception) {
@@ -316,36 +357,80 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    // 2. IMPROVED LONG PRESS (Fixes "Random Whole Line" selection)
+    /**
+     * UNIFIED SEARCH: Takes any text string and finds the Rects in the PDF.
+     * Used by:
+     * 1. Displaying notes in Image Mode
+     * 2. Converting Text Mode Selection -> Image Mode Note
+     */
+    suspend fun findRectsForText(pageIndex: Int, text: String): List<NormRect> = withContext(Dispatchers.Default) {
+        if (text.isBlank()) return@withContext emptyList()
+
+        val chars = getPageChars(pageIndex)
+        if (chars.isEmpty()) return@withContext emptyList()
+
+        // Remove whitespaces to find ink-to-ink match
+        val cleanTarget = text.replace("\\s+".toRegex(), "")
+        if (cleanTarget.isEmpty()) return@withContext emptyList()
+
+        var matchIndex = 0
+        var startCharIndex = -1
+
+        for (i in chars.indices) {
+            val pdfChar = chars[i]
+            if (pdfChar.isSpace || pdfChar.text.isBlank()) continue
+
+            if (pdfChar.text.equals(cleanTarget[matchIndex].toString(), ignoreCase = true)) {
+                if (matchIndex == 0) startCharIndex = i
+                matchIndex++
+
+                if (matchIndex == cleanTarget.length) {
+                    // Match found: Merge chars into lines
+                    val matchedChars = chars.slice(startCharIndex..i)
+                    return@withContext mergeCharsToLineRects(matchedChars)
+                }
+            } else {
+                if (matchIndex > 0) {
+                    // Reset on mismatch
+                    matchIndex = 0
+                    startCharIndex = -1
+                }
+            }
+        }
+        emptyList()
+    }
+
+    // Helper to allow NoteEntity to call the search without duplicating logic
+    suspend fun getRectsForNote(note: NoteEntity): List<NormRect> {
+        val savedRects = note.getRects()
+        if (savedRects.isNotEmpty()) return savedRects // Use cached if available
+        return findRectsForText(note.pageIndex, note.originalText)
+    }
+
+    // ----------------------------------------------------------------------
+    // UI HELPERS (Image Mode)
+    // ----------------------------------------------------------------------
+
     fun onLongPress(pageIndex: Int, touchPoint: Offset, viewSize: Size) {
         viewModelScope.launch(Dispatchers.Default) {
             val chars = getPageChars(pageIndex)
             val normPoint = Offset(touchPoint.x / viewSize.width, touchPoint.y / viewSize.height)
-
             val hitIndex = chars.indexOfFirst { !it.isSpace && containsPoint(it.bounds, normPoint) }
 
             if (hitIndex != -1) {
-                // Safety: Get Y of the hit char to detect line breaks
                 val hitY = chars[hitIndex].bounds.top
-
-                // EXPAND LEFT
                 var start = hitIndex
                 while (start > 0) {
                     val prev = chars[start - 1]
-                    // Stop if Space OR Line Change (Y diff > 2%)
-                    if (prev.isSpace || kotlin.math.abs(prev.bounds.top - hitY) > 0.02f) break
+                    if (prev.isSpace || abs(prev.bounds.top - hitY) > 0.02f) break
                     start--
                 }
-
-                // EXPAND RIGHT
                 var end = hitIndex
                 while (end < chars.lastIndex) {
                     val next = chars[end + 1]
-                    // Stop if Space OR Line Change
-                    if (next.isSpace || kotlin.math.abs(next.bounds.top - hitY) > 0.02f) break
+                    if (next.isSpace || abs(next.bounds.top - hitY) > 0.02f) break
                     end++
                 }
-
                 updateSelectionState(pageIndex, start, end, chars)
             } else {
                 _selectionState.value = null
@@ -361,7 +446,6 @@ class ReaderViewModel @Inject constructor(
             val chars = getPageChars(current.pageIndex)
             val normPoint = Offset(dragPoint.x / viewSize.width, dragPoint.y / viewSize.height)
 
-            // Find closest char (excluding spaces for snap targets)
             val targetIndex = chars.indices
                 .filter { !chars[it].isSpace }
                 .minByOrNull { index ->
@@ -371,7 +455,7 @@ class ReaderViewModel @Inject constructor(
                     (cx - normPoint.x) * (cx - normPoint.x) + (cy - normPoint.y) * (cy - normPoint.y)
                 } ?: return@launch
 
-            var newStart = current.startWordIndex // reusing field name for char index
+            var newStart = current.startWordIndex
             var newEnd = current.endWordIndex
 
             if (current.activeHandle == DragHandle.START) {
@@ -381,12 +465,10 @@ class ReaderViewModel @Inject constructor(
                 newEnd = targetIndex
                 if (newEnd < newStart) newStart = newEnd
             }
-
             updateSelectionState(current.pageIndex, newStart, newEnd, chars, current.activeHandle)
         }
     }
 
-    // 4. MERGE LOGIC (Continuous Highlight)
     private fun updateSelectionState(
         pageIndex: Int,
         start: Int,
@@ -395,11 +477,7 @@ class ReaderViewModel @Inject constructor(
         activeHandle: DragHandle = DragHandle.NONE
     ) {
         val selectedSubset = chars.slice(start..end)
-
-        // A. Construct Text
         val text = selectedSubset.joinToString("") { it.text }
-
-        // B. Construct Visual Rects (Merged Line by Line)
         val visualRects = mergeCharsToLineRects(selectedSubset)
 
         _selectionState.value = SelectionState(
@@ -411,6 +489,154 @@ class ReaderViewModel @Inject constructor(
             activeHandle = activeHandle
         )
     }
+
+    // ... (Helper methods for UI: isTouchingHandle, checkHandleHitUI, onDragStart, onDragEnd, distance, etc - No logic change, just kept for UI functionality) ...
+
+    fun onDragStart(pageIndex: Int, startPoint: Offset, viewSize: Size) {
+        val current = _selectionState.value ?: return
+        if (current.pageIndex != pageIndex) return
+        val normPoint = Offset(startPoint.x / viewSize.width, startPoint.y / viewSize.height)
+        val startRect = current.rects.first()
+        val startDist = distance(normPoint, startRect.left, startRect.top, 1f)
+        val endRect = current.rects.last()
+        val endDist = distance(normPoint, endRect.right, endRect.bottom, 1f)
+        val touchThreshold = 0.05f
+
+        if (startDist < touchThreshold) _selectionState.value = current.copy(activeHandle = DragHandle.START)
+        else if (endDist < touchThreshold) _selectionState.value = current.copy(activeHandle = DragHandle.END)
+    }
+
+    fun onDragEnd() { _selectionState.value = _selectionState.value?.copy(activeHandle = DragHandle.NONE) }
+    private fun distance(p: Offset, targetX: Float, targetY: Float, aspect: Float): Float {
+        return sqrt((p.x - targetX) * (p.x - targetX) + (p.y - targetY) * (p.y - targetY))
+    }
+    private fun containsPoint(rect: NormRect, point: Offset): Boolean {
+        val pad = 0.01f
+        return point.x >= (rect.left - pad) && point.x <= (rect.right + pad) &&
+                point.y >= (rect.top - pad) && point.y <= (rect.bottom + pad)
+    }
+
+    private fun mergeCharsToLineRects(chars: List<PdfChar>): List<NormRect> {
+        val merged = mutableListOf<NormRect>()
+        if (chars.isEmpty()) return merged
+        val visibleChars = chars.filter { !it.isSpace }
+        if (visibleChars.isEmpty()) return merged
+
+        val sorted = visibleChars.sortedWith { a, b ->
+            if (abs(a.bounds.top - b.bounds.top) < 0.01f) a.bounds.left.compareTo(b.bounds.left)
+            else a.bounds.top.compareTo(b.bounds.top)
+        }
+
+        var currentLeft = sorted[0].bounds.left
+        var currentRight = sorted[0].bounds.right
+        var currentTop = sorted[0].bounds.top
+        var currentBottom = sorted[0].bounds.bottom
+        var currentLineY = (currentTop + currentBottom) / 2
+
+        for (i in 1 until sorted.size) {
+            val charBounds = sorted[i].bounds
+            val charCenterY = (charBounds.top + charBounds.bottom) / 2
+            val isNewLine = abs(charCenterY - currentLineY) > 0.015f
+            val isHugeGap = abs(charBounds.left - currentRight) > 0.8f
+
+            if (!isNewLine && !isHugeGap) {
+                currentRight = maxOf(currentRight, charBounds.right)
+                currentTop = minOf(currentTop, charBounds.top)
+                currentBottom = maxOf(currentBottom, charBounds.bottom)
+            } else {
+                merged.add(NormRect(currentLeft, currentTop, currentRight, currentBottom))
+                currentLeft = charBounds.left
+                currentRight = charBounds.right
+                currentTop = charBounds.top
+                currentBottom = charBounds.bottom
+                currentLineY = (currentTop + currentBottom) / 2
+            }
+        }
+        merged.add(NormRect(currentLeft, currentTop, currentRight, currentBottom))
+        return merged
+    }
+
+    // ----------------------------------------------------------------------
+    // UI HELPERS (Text Mode)
+    // ----------------------------------------------------------------------
+
+    fun setTextSelection(page: Int, text: String, range: TextRange) {
+        _textSelection.value = TextSelectionState(page, text, range)
+    }
+
+    fun processTextHighlights(rawText: String, pageNotes: List<NoteEntity>): AnnotatedString {
+        return buildAnnotatedString {
+            append(rawText)
+            val textLength = rawText.length
+            pageNotes.forEach { note ->
+                var start = note.textRangeStart
+                var end = note.textRangeEnd
+
+                // If saved via Image Mode (no text indices), find them dynamically
+                if (start == null || end == null) {
+                    val bounds = findFuzzyBounds(rawText, note.originalText)
+                    if (bounds != null) {
+                        start = bounds.first
+                        end = bounds.second
+                    }
+                }
+
+                if (start != null && end != null) {
+                    val safeStart = start!!.coerceIn(0, textLength)
+                    val safeEnd = end!!.coerceIn(0, textLength)
+                    if (safeStart < safeEnd) {
+                        try {
+                            addStyle(SpanStyle(background = Color(0x66FFEB3B)), safeStart, safeEnd)
+                        } catch (e: Exception) { }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun findFuzzyBounds(container: String, target: String): Pair<Int, Int>? {
+        val exactIndex = container.indexOf(target)
+        if (exactIndex != -1) return exactIndex to (exactIndex + target.length)
+
+        val cleanTarget = target.replace("\\s+".toRegex(), "")
+        if (cleanTarget.isEmpty()) return null
+
+        var containerCleanIndex = 0
+        var matchCount = 0
+        var startIndex = -1
+
+        for (i in container.indices) {
+            val char = container[i]
+            if (char.isWhitespace()) continue
+            if (char == cleanTarget[matchCount]) {
+                if (matchCount == 0) startIndex = i
+                matchCount++
+                if (matchCount == cleanTarget.length) return startIndex to (i + 1)
+            } else {
+                if (matchCount > 0) {
+                    matchCount = 0
+                    startIndex = -1
+                }
+            }
+        }
+        return null
+    }
+
+    fun clearAllSelection() {
+        _selectionState.value = null
+        _textSelection.value = null
+    }
+
+    // Unified selection text for UI consumption (Toolbars, etc)
+    val currentSelectionText = combine(
+        _selectionState,
+        _textSelection,
+        _isTextMode
+    ) { img, txt, isText ->
+        if (isText) txt?.text else img?.selectedText
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
+
+
 
     fun setDraggingHandle(handle: DragHandle) {
         val current = _selectionState.value ?: return
@@ -440,340 +666,7 @@ class ReaderViewModel @Inject constructor(
         return DragHandle.NONE
     }
 
-    // Slightly increased padding (3%) to make selection easier
-    private fun containsPoint(rect: NormRect, point: Offset): Boolean {
-        val paddingX = 0.01f
-        val paddingY = 0.01f
-        return point.x >= (rect.left - paddingX) && point.x <= (rect.right + paddingX) &&
-                point.y >= (rect.top - paddingY) && point.y <= (rect.bottom + paddingY)
-    }
-    fun onDragStart(pageIndex: Int, startPoint: Offset, viewSize: Size) {
-        val current = _selectionState.value ?: return
-        if (current.pageIndex != pageIndex) return
-
-        val normPoint = Offset(startPoint.x / viewSize.width, startPoint.y / viewSize.height)
-
-        // Check if we touched the START handle (first rect start)
-        val startRect = current.rects.first()
-        val startDist = distance(normPoint, startRect.left, startRect.top, viewSize.width / viewSize.height) // aspect ratio correction roughly
-
-        // Check if we touched the END handle (last rect end)
-        val endRect = current.rects.last()
-        val endDist = distance(normPoint, endRect.right, endRect.bottom, viewSize.width / viewSize.height)
-
-        // Threshold for "touching" a handle (e.g., 40dp converted to norm)
-        val touchThreshold = 0.05f
-
-        if (startDist < touchThreshold) {
-            _selectionState.value = current.copy(activeHandle = DragHandle.START)
-        } else if (endDist < touchThreshold) {
-            _selectionState.value = current.copy(activeHandle = DragHandle.END)
-        } else {
-            // User dragged middle of text? Maybe clear or scroll.
-            // For now, let's treat drag outside handles as NO-OP or Clear
-            // _selectionState.value = null
-        }
-    }
-
-    fun onDragEnd() {
-        _selectionState.value = _selectionState.value?.copy(activeHandle = DragHandle.NONE)
-    }
-
-    private fun distance(p: Offset, targetX: Float, targetY: Float, aspect: Float): Float {
-        // Adjust X by aspect to measure distance in "visual squareness" if needed,
-        // or just simple norm distance
-        return kotlin.math.sqrt(
-            (p.x - targetX) * (p.x - targetX) + (p.y - targetY) * (p.y - targetY)
-        )
-    }
-
     fun clearSelection() {
         _selectionState.value = null
     }
-
-    fun saveCurrentSelectionAsNote(content: String) {
-        val sel = _selectionState.value ?: return
-        val uri = currentBookUri ?: return
-
-        viewModelScope.launch {
-            val note = NoteEntity.fromRects(uri, sel.pageIndex, sel.selectedText, content, sel.rects)
-            noteRepository.addNote(note)
-            clearSelection()
-        }
-    }
-
-    fun saveTextModeNote(pageIndex: Int, textContent: String, range: TextRange, note: String) {
-        val uri = currentBookUri ?: return
-        if (range.collapsed) return
-
-        // Extract the selected substring
-        val selectedText = try {
-            textContent.substring(range.start, range.end)
-        } catch (e: Exception) { "" }
-
-        viewModelScope.launch {
-            val entity = NoteEntity(
-                bookUri = uri,
-                pageIndex = pageIndex,
-                originalText = selectedText,
-                noteContent = note,
-                rectsJson = "", // Not used in text mode
-                textRangeStart = range.start,
-                textRangeEnd = range.end
-            )
-            noteRepository.addNote(entity)
-        }
-    }
-
-    private fun String.clean(): String = this.replace("\\s+".toRegex(), "")
-
-    // ---------------------------------------------------------
-    // 1. SYNC: Image Mode -> Text Mode (Display Rect Note in Text)
-    // ---------------------------------------------------------
-    fun processTextHighlights(rawText: String, pageNotes: List<NoteEntity>): AnnotatedString {
-        return buildAnnotatedString {
-            append(rawText)
-
-            val textLength = rawText.length // Get actual length
-
-            pageNotes.forEach { note ->
-                var start = note.textRangeStart
-                var end = note.textRangeEnd
-
-                // (Keep your fallback sync logic here...)
-                if (start == null || end == null) {
-                    val bounds = findFuzzyBounds(rawText, note.originalText)
-                    if (bounds != null) {
-                        start = bounds.first
-                        end = bounds.second
-                    }
-                }
-
-                // CRITICAL FIX: Safe Bounds Check
-                if (start != null && end != null) {
-                    // Clamp values to prevent out-of-bounds crash
-                    val safeStart = start!!.coerceIn(0, textLength)
-                    val safeEnd = end!!.coerceIn(0, textLength)
-
-                    // Only apply if range is valid
-                    if (safeStart < safeEnd) {
-                        try {
-                            addStyle(
-                                style = SpanStyle(background = Color(0x66FFEB3B)),
-                                start = safeStart,
-                                end = safeEnd
-                            )
-                        } catch (e: Exception) {
-                            // Log error but don't crash
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-
-    // ---------------------------------------------------------
-    // THE SEARCH ALGORITHM (Ignores Whitespace Mismatches)
-    // ---------------------------------------------------------
-    private fun findFuzzyBounds(container: String, target: String): Pair<Int, Int>? {
-        // 1. Try Exact Match first (Fastest)
-        val exactIndex = container.indexOf(target)
-        if (exactIndex != -1) return exactIndex to (exactIndex + target.length)
-
-        // 2. Try Clean Match (Ignore all whitespace)
-        // This maps the "Clean Index" back to "Real Index"
-        val cleanTarget = target.clean()
-        if (cleanTarget.isEmpty()) return null
-
-        var containerCleanIndex = 0
-        var matchCount = 0
-        var startIndex = -1
-
-        // Iterate through the container character by character
-        for (i in container.indices) {
-            val char = container[i]
-            if (char.isWhitespace()) continue // Skip whitespace in container
-
-            // Check match against clean target
-            if (char == cleanTarget[matchCount]) {
-                if (matchCount == 0) startIndex = i // Start of match
-                matchCount++
-                if (matchCount == cleanTarget.length) {
-                    // Match Complete!
-                    // i is the end index (inclusive), so add 1 for exclusive
-                    return startIndex to (i + 1)
-                }
-            } else {
-                // Mismatch. Reset.
-                if (matchCount > 0) {
-                    // Backtrack is tricky in simple scanner.
-                    // For perfect accuracy, we need KMP algorithm or regex,
-                    // but simple reset often works for unique text.
-                    // A simple hack: If we fail, we reset matchCount.
-                    // (Real implementation should backtrack 'i' but this is usually sufficient for Reader)
-                    matchCount = 0
-                    startIndex = -1
-                }
-            }
-        }
-        return null
-    }
-
-    private fun mergeCharsToLineRects(chars: List<PdfChar>): List<NormRect> {
-        val merged = mutableListOf<NormRect>()
-        if (chars.isEmpty()) return merged
-
-        val visibleChars = chars.filter { !it.isSpace }
-        if (visibleChars.isEmpty()) return merged
-
-        // CRITICAL: Sort strictly by Line (Y), then by Position (X)
-        val sorted = visibleChars.sortedWith { a, b ->
-            // If Y is very similar (within 1% of page height), sort by X
-            if (kotlin.math.abs(a.bounds.top - b.bounds.top) < 0.01f) {
-                a.bounds.left.compareTo(b.bounds.left)
-            } else {
-                a.bounds.top.compareTo(b.bounds.top)
-            }
-        }
-
-        var currentLeft = sorted[0].bounds.left
-        var currentRight = sorted[0].bounds.right
-        var currentTop = sorted[0].bounds.top
-        var currentBottom = sorted[0].bounds.bottom
-
-        // Track visual center of line
-        var currentLineY = (currentTop + currentBottom) / 2
-
-        for (i in 1 until sorted.size) {
-            val charBounds = sorted[i].bounds
-            val charCenterY = (charBounds.top + charBounds.bottom) / 2
-
-            // STRICT NEW LINE DETECTION
-            // If the center of this char is far from the center of the current line
-            val isNewLine = kotlin.math.abs(charCenterY - currentLineY) > 0.015f
-
-            // STRICT GAP DETECTION
-            // If this char is way to the right or left (e.g. huge gap), break the rect
-            // This prevents connecting header text to footer text accidentally
-            val isHugeGap = kotlin.math.abs(charBounds.left - currentRight) > 0.8f
-
-            if (!isNewLine && !isHugeGap) {
-                // Extend
-                currentRight = maxOf(currentRight, charBounds.right)
-                currentTop = minOf(currentTop, charBounds.top)
-                currentBottom = maxOf(currentBottom, charBounds.bottom)
-            } else {
-                // Save & Start New
-                merged.add(NormRect(currentLeft, currentTop, currentRight, currentBottom))
-                currentLeft = charBounds.left
-                currentRight = charBounds.right
-                currentTop = charBounds.top
-                currentBottom = charBounds.bottom
-                currentLineY = (currentTop + currentBottom) / 2
-            }
-        }
-        merged.add(NormRect(currentLeft, currentTop, currentRight, currentBottom))
-
-        return merged
-    }
-
-    // 2. FIXED SEARCH LOGIC (Regex based)
-    // This fixes the bug where changing font size caused sync issues
-    suspend fun getRectsForNote(note: NoteEntity): List<NormRect> {
-        val savedRects = note.getRects()
-        if (savedRects.isNotEmpty()) return savedRects
-        if (note.originalText.isBlank()) return emptyList()
-
-        return withContext(Dispatchers.Default) {
-            val chars = getPageChars(note.pageIndex)
-            if (chars.isEmpty()) return@withContext emptyList()
-
-            // 1. Prepare Target: Remove all whitespace from the note text
-            // "Hello World" -> "HelloWorld"
-            val cleanTarget = note.originalText.replace("\\s+".toRegex(), "")
-            if (cleanTarget.isEmpty()) return@withContext emptyList()
-
-            // 2. Scan the Page Chars to find this sequence
-            var matchIndex = 0
-            var startCharIndex = -1
-
-            // We iterate through all characters on the page
-            for (i in chars.indices) {
-                val pdfChar = chars[i]
-
-                // Skip space objects in the PDF character list (we only match real ink)
-                if (pdfChar.isSpace || pdfChar.text.isBlank()) continue
-
-                // Compare current PDF char with the next expected char in target
-                // We use ignoreCase for robustness
-                if (pdfChar.text.equals(cleanTarget[matchIndex].toString(), ignoreCase = true)) {
-                    if (matchIndex == 0) {
-                        startCharIndex = i // Potential start found
-                    }
-                    matchIndex++
-
-                    // 3. Match Complete?
-                    if (matchIndex == cleanTarget.length) {
-                        // We found the full sequence!
-                        // The range of PdfChar objects is from startCharIndex to current i
-                        val matchedChars = chars.slice(startCharIndex..i)
-                        return@withContext mergeCharsToLineRects(matchedChars)
-                    }
-                } else {
-                    // Mismatch. Reset.
-                    if (matchIndex > 0) {
-                        // Optimization: In complex texts we should backtrack,
-                        // but simple reset works for 99% of unique phrases.
-                        // If you need perfect accuracy for repeated words like "The The",
-                        // we would need a proper KMP search, but this is sufficient.
-                        matchIndex = 0
-                        startCharIndex = -1
-                        // Retry this char against the start of target?
-                        // For simplicity, we just move on.
-                    }
-                }
-            }
-
-            // No match found
-            emptyList()
-        }
-    }
-
-    data class TextSelectionState(
-        val pageIndex: Int,
-        val text: String,
-        val range: TextRange
-    )
-
-    private val _textSelection = MutableStateFlow<TextSelectionState?>(null)
-    val textSelection = _textSelection.asStateFlow()
-
-    // --- FIX 3: Mode-Aware Selection Helper ---
-    // Only return text if the relevant mode is active
-    val currentSelectionText = combine(
-        _selectionState,
-        _textSelection,
-        _isTextMode // Depend on the mode
-    ) { img, txt, isText ->
-        if (isText) txt?.text else img?.selectedText
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
-
-    fun setTextSelection(page: Int, text: String, range: TextRange) {
-        _textSelection.value = TextSelectionState(page, text, range)
-    }
-
-    // Unified Clear
-    fun clearAllSelection() {
-        _selectionState.value = null
-        _textSelection.value = null
-    }
-
-    // Updated Save for Text Mode (uses stored state)
-    fun saveTextModeNote(noteContent: String) {
-        val sel = _textSelection.value ?: return
-        saveTextModeNote(sel.pageIndex, sel.text, sel.range, noteContent)
-        clearAllSelection()
-    }
-
 }

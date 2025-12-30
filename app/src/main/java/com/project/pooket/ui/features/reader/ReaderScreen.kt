@@ -21,7 +21,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -62,7 +61,6 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.toSize
-import androidx.compose.ui.window.Popup
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.project.pooket.data.local.note.NormRect
@@ -109,7 +107,6 @@ fun ReaderScreen(
     val selectedText by viewModel.currentSelectionText.collectAsStateWithLifecycle()
     val clipboardManager = LocalClipboardManager.current
 
-
     LaunchedEffect(bookUri) { viewModel.loadPdf(bookUri) }
 
     LaunchedEffect(isLoading, totalPages) {
@@ -143,23 +140,18 @@ fun ReaderScreen(
     var showNotesSheet by remember { mutableStateOf(false) }
     var showNoteDialog by remember { mutableStateOf(false) }
 
-
     // Load notes initially
     LaunchedEffect(bookUri) {
         viewModel.loadPdf(bookUri)
-        viewModel.loadNotes(bookUri) // Call the new loader
+        viewModel.loadNotes(bookUri)
     }
-
 
     var globalScale by remember { mutableFloatStateOf(1f) }
     var globalOffset by remember { mutableStateOf(Offset.Zero) }
 
     fun clampOffset(proposedOffset: Offset, scale: Float, size: Size): Offset {
-        // Available hidden width/height due to zoom
         val maxX = (size.width * scale - size.width) / 2f
         val maxY = (size.height * scale - size.height) / 2f
-
-        // If scale is 1f, maxX/Y is 0, locking content to center
         return Offset(
             proposedOffset.x.coerceIn(-maxX, maxX),
             proposedOffset.y.coerceIn(-maxY, maxY)
@@ -221,39 +213,23 @@ fun ReaderScreen(
                         .fillMaxSize()
                         .pointerInput(isVerticalMode, isTextMode) {
                             if (isTextMode) return@pointerInput
-
-                            // DOUBLE TAP TO ZOOM
                             detectTapGestures(
-//                                onTap = { showControls = !showControls },
+                                // onTap = { showControls = !showControls }, // Optional: toggle controls
                                 onDoubleTap = {
                                     if (globalScale > 1f) {
-                                        // Reset to 1f and Center
                                         globalScale = 1f
                                         globalOffset = Offset.Zero
                                     } else {
-                                        // Zoom in 2.5x
                                         globalScale = 2.5f
-                                        // No offset change (zooms to center)
                                     }
                                 }
                             )
                         }
                         .pointerInput(isVerticalMode, isTextMode) {
                             if (isTextMode) return@pointerInput
-
-                            // ZOOM & PAN GESTURE
                             detectTransformGestures { _, pan, zoom, _ ->
-                                // 1. Calculate New Scale (Clamped 1f..5f)
                                 val newScale = (globalScale * zoom).coerceIn(1f, 5f)
-
-                                // 2. Calculate New Offset
-                                // If we are zooming, we might want to stay centered or follow focus,
-                                // but simple panning updates the offset.
                                 val proposedOffset = globalOffset + pan
-
-                                // 3. Apply Constraints
-                                // Only update offset if we are zoomed in (scale > 1)
-                                // If scale is 1, offset forces to Zero (handled by clamp logic)
                                 globalOffset = clampOffset(proposedOffset, newScale, size.toSize())
                                 globalScale = newScale
                             }
@@ -264,57 +240,11 @@ fun ReaderScreen(
                             translationX = if (isTextMode) 0f else globalOffset.x
                             translationY = if (isTextMode || isVerticalMode) 0f else globalOffset.y
                         }
-//                        .pointerInput(isVerticalMode, isTextMode) {
-//                            detectTapGestures(
-//                                onTap = { showControls = !showControls },
-//                                onDoubleTap = {
-//                                    if (!isTextMode) {
-//                                        globalScale = if (globalScale > 1f) 1f else 2.5f
-//                                        globalOffset = Offset.Zero
-//                                    }
-//                                }
-//                            )
-//                        }
-//                        .pointerInput(isVerticalMode, isTextMode) {
-//                            if (isTextMode) return@pointerInput
-//                            awaitEachGesture {
-//                                awaitFirstDown(requireUnconsumed = false)
-//                                do {
-//                                    val event = awaitPointerEvent()
-//                                    val zoomChange = event.calculateZoom()
-//                                    val panChange = event.calculatePan()
-//
-//                                    if (event.changes.size > 1 || globalScale > 1f) {
-//                                        globalScale = (globalScale * zoomChange).coerceIn(1f, 5f)
-//
-//                                        if (isVerticalMode) {
-//                                            if (panChange.y != 0f) {
-//                                                scope.launch { listState.dispatchRawDelta(-panChange.y / globalScale) }
-//                                            }
-//                                            val extraWidth = (size.width * (globalScale - 1)) / 2
-//                                            val newX = (globalOffset.x + panChange.x).coerceIn(-extraWidth, extraWidth)
-//                                            globalOffset = Offset(newX, 0f)
-//                                        } else {
-//                                            globalOffset += panChange
-//                                        }
-//                                        event.changes.forEach { it.consume() }
-//                                    }
-//                                } while (event.changes.any { it.pressed })
-//                            }
-//                        }
-//                        .graphicsLayer {
-//                            val scale = if (isTextMode) 1f else globalScale
-//                            scaleX = scale
-//                            scaleY = scale
-//                            translationX = if (isTextMode) 0f else globalOffset.x
-//                            translationY = if (isVerticalMode || isTextMode) 0f else globalOffset.y
-//                        }
                 ) {
                     if (isVerticalMode) {
                         LazyColumn(
                             state = listState,
                             modifier = Modifier.fillMaxSize(),
-//                            contentPadding = PaddingValues(bottom = 100.dp)
                         ) {
                             items(
                                 count = totalPages,
@@ -327,8 +257,7 @@ fun ReaderScreen(
                                     isNightMode,
                                     isTextMode,
                                     fontSize,
-                                    currentZoom = globalScale // <--- PASS THIS NEW PARAMETER
-
+                                    currentZoom = globalScale
                                 )
                             }
                         }
@@ -355,7 +284,7 @@ fun ReaderScreen(
                     onClick = { showControls = !showControls },
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(top = 48.dp, end = 16.dp), // Safe area padding
+                        .padding(top = 48.dp, end = 16.dp),
                     containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)
                 ) {
                     Icon(Icons.Default.Menu, contentDescription = "Menu")
@@ -371,6 +300,8 @@ fun ReaderScreen(
                     )
                 }
             }
+
+            // UNIFIED SELECTION BAR
             AnimatedVisibility(
                 visible = selectedText != null,
                 enter = slideInVertically { -it } + fadeIn(),
@@ -388,6 +319,7 @@ fun ReaderScreen(
             }
         }
     }
+
     if (showNotesSheet) {
         NotesListSheet(
             notes = notes,
@@ -403,23 +335,22 @@ fun ReaderScreen(
             onDismiss = { showNotesSheet = false }
         )
     }
+
     if (showNoteDialog) {
         NoteInputDialog(
             onDismiss = { showNoteDialog = false },
             onConfirm = { noteText ->
-                // Check which mode is active to save correctly
-                if (viewModel.selectionState.value != null) {
-                    viewModel.saveCurrentSelectionAsNote(noteText) // Image Mode
-                } else if (viewModel.textSelection.value != null) {
-                    viewModel.saveTextModeNote(noteText) // Text Mode
-                }
+                // FIX: Use the unified save function.
+                // It handles determining if we are in Text Mode (and need mapping)
+                // or Image Mode (and use existing rects).
+                viewModel.saveNote(noteText)
                 showNoteDialog = false
             }
         )
     }
 }
 
-// --- NEW COMPOSABLE: The Floating Bar ---
+// --- FLOATING BAR ---
 @Composable
 fun SelectionControlBar(
     onCopy: () -> Unit,
@@ -432,7 +363,7 @@ fun SelectionControlBar(
             .padding(16.dp),
         shape = RoundedCornerShape(12.dp),
         shadowElevation = 8.dp,
-        color = MaterialTheme.colorScheme.surfaceContainerHighest, // Distinct color
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
         tonalElevation = 6.dp
     ) {
         Row(
@@ -446,7 +377,6 @@ fun SelectionControlBar(
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onCopy) {
                     Icon(Icons.Default.ContentCopy, "Copy")
@@ -454,7 +384,9 @@ fun SelectionControlBar(
                 IconButton(onClick = onNote) {
                     Icon(Icons.Default.Edit, "Note")
                 }
-                VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 8.dp))
+                VerticalDivider(modifier = Modifier
+                    .height(24.dp)
+                    .padding(horizontal = 8.dp))
                 IconButton(onClick = onClose) {
                     Icon(Icons.Default.Close, "Close")
                 }
@@ -492,7 +424,7 @@ fun PdfPageItem(
             }
         }
 
-        // Load Text
+        // Load Text & Highlights
         LaunchedEffect(pageIndex, pageNotes) {
             if (textContent == null) textContent = viewModel.extractText(pageIndex)
             textContent?.let { raw ->
@@ -502,16 +434,10 @@ fun PdfPageItem(
             }
         }
 
-        // 1. SCROLL FIX: Prevent LazyColumn from scrolling when TextField is focused
         val bringIntoViewResponder = remember {
             object : BringIntoViewResponder {
-                override fun calculateRectForParent(localRect: Rect): Rect {
-                    // Tell parent the item is "already visible" so it doesn't scroll
-                    return Rect.Zero
-                }
-                override suspend fun bringChildIntoView(localRect: () -> Rect?) {
-                    // Do nothing
-                }
+                override fun calculateRectForParent(localRect: Rect): Rect = Rect.Zero
+                override suspend fun bringChildIntoView(localRect: () -> Rect?) {}
             }
         }
 
@@ -536,11 +462,12 @@ fun PdfPageItem(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 24.dp)
-                    // Only scroll internally if NOT in Vertical Mode (LazyColumn handles Vertical)
                     .then(if (!isVerticalMode) Modifier.verticalScroll(rememberScrollState()) else Modifier)
             ) {
                 if (textContent == null) {
-                    Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
+                    Box(Modifier
+                        .fillMaxWidth()
+                        .height(400.dp), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
                     }
                 } else {
@@ -556,16 +483,20 @@ fun PdfPageItem(
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            // APPLY THE FIX HERE
                             .bringIntoViewResponder(bringIntoViewResponder),
                         onTextLayout = { layoutResult = it }
                     )
 
-                    // Icons overlay... (Same as before)
+                    // Draw Note Icons for Text Mode
                     if (layoutResult != null) {
                         pageNotes.forEach { note ->
+                            // Notes saved in Text Mode have explicit ranges
+                            // Notes mapped from Image Mode might have been calculated in processTextHighlights
+                            // For icons, we rely on the `textRangeStart` which processTextHighlights updates in the note object ideally,
+                            // or we can just rely on the fact that `processTextHighlights` highlights the text color.
+                            // If you want icons for mapped notes, you'd need the range.
                             if (note.textRangeStart != null) {
-                                    val bounds = layoutResult!!.getBoundingBox(note.textRangeStart)
+                                    val bounds = layoutResult!!.getBoundingBox(note.textRangeStart!!)
                                     val iconX = bounds.left
                                     val iconY = bounds.top - 24.dp.toPx(LocalDensity.current)
                                     NoteIcon(iconX, iconY, 24.dp, onClick = { clickedNoteContent = note.noteContent })
@@ -582,7 +513,7 @@ fun PdfPageItem(
         return
     }
 
-    // --- IMAGE MODE LOGIC (Unchanged from previous correct version) ---
+    // --- IMAGE MODE LOGIC ---
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
     var layoutSize by remember { mutableStateOf(Size.Zero) }
     var noteRectsMap by remember { mutableStateOf<Map<Long, List<NormRect>>>(emptyMap()) }
@@ -590,6 +521,7 @@ fun PdfPageItem(
     LaunchedEffect(pageNotes, isTextMode) {
         withContext(Dispatchers.Default) {
             val newMap = mutableMapOf<Long, List<NormRect>>()
+            // This now uses the unified `getRectsForNote` which handles both saved rects AND text-to-rect mapping
             pageNotes.forEach { note -> newMap[note.id] = viewModel.getRectsForNote(note) }
             withContext(Dispatchers.Main) { noteRectsMap = newMap }
         }
@@ -600,7 +532,9 @@ fun PdfPageItem(
     }
 
     val currentBitmap = bitmap ?: run {
-        Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier
+            .fillMaxWidth()
+            .height(400.dp), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
         }
         return
@@ -684,6 +618,7 @@ fun PdfPageItem(
                     val sortedRects = rects.sortedBy { it.top }
                     val first = sortedRects.first()
                     val last = sortedRects.last()
+                    // Use passed currentZoom to scale handles
                     val baseRadius = 12.dp.toPx()
                     val scaledRadius = baseRadius / currentZoom
                     drawAndroidSelectionHandle(first.left * w, first.bottom * h, scaledRadius, true)
@@ -713,7 +648,7 @@ fun PdfPageItem(
     }
 }
 
-// --- HELPER COMPOSABLES & EXTENSIONS ---
+// --- HELPER COMPOSABLES ---
 
 @Composable
 fun NoteIcon(
@@ -731,7 +666,7 @@ fun NoteIcon(
             .background(Color.White, CircleShape)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
-                indication = null, // Disable ripple for cleaner look on small icons
+                indication = null,
                 onClick = onClick
             )
     ) {
@@ -765,37 +700,27 @@ fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAndroidSelectionHandle(
     val color = Color(0xFF2196F3)
     val path = androidx.compose.ui.graphics.Path()
 
-    // Android handle geometry:
-    // It's a circle at the bottom, with a triangle connecting it to the cursor point (x,y).
-    // Center of the circle:
-    val circleCenterY = y + radius // Circle sits below the line
+    val circleCenterY = y + radius
     val circleCenterX = if (isLeft) x - (radius * 0.5f) else x + (radius * 0.5f)
-    // ^ Shift circle slightly outward for better visibility
 
-    // Let's draw a nice fluid teardrop path
-    path.moveTo(x, y) // The tip at the text line
+    path.moveTo(x, y)
 
     if (isLeft) {
-        // Left Handle (Curved bulge to the left)
-        // Curve down to the circle
         path.quadraticBezierTo(
-            x - radius, y + (radius * 0.5f), // Control point
-            x - radius, y + radius           // Start of circle arc
+            x - radius, y + (radius * 0.5f),
+            x - radius, y + radius
         )
-        // Bottom arc
         path.arcTo(
             rect = Rect(
-                center = Offset(x - (radius * 0.8f), y + radius), // Shifted center
+                center = Offset(x - (radius * 0.8f), y + radius),
                 radius = radius
             ),
             startAngleDegrees = 135f,
             sweepAngleDegrees = 270f,
             forceMoveTo = false
         )
-        // Close back to tip
         path.lineTo(x, y)
     } else {
-        // Right Handle (Curved bulge to the right)
         path.quadraticBezierTo(
             x + radius, y + (radius * 0.5f),
             x + radius, y + radius
@@ -805,7 +730,7 @@ fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAndroidSelectionHandle(
                 center = Offset(x + (radius * 0.8f), y + radius),
                 radius = radius
             ),
-            startAngleDegrees = 135f, // Approx angles for visual shape
+            startAngleDegrees = 135f,
             sweepAngleDegrees = -270f,
             forceMoveTo = false
         )
@@ -817,53 +742,6 @@ fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAndroidSelectionHandle(
 
 @Composable
 fun Dp.toPx(density: androidx.compose.ui.unit.Density) = with(density) { this@toPx.toPx() }
-
-@Composable
-fun SelectionToolbarContent(onCopy: () -> Unit, onNote: () -> Unit) {
-    // Centering Hack: Shift left by 50% of approximate width (60dp)
-    Box(modifier = Modifier.offset(x = (-60).dp)) {
-        Row(
-            modifier = Modifier
-                .shadow(4.dp, RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.inverseSurface, RoundedCornerShape(8.dp))
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            ToolbarButton(Icons.Default.ContentCopy, "Copy", onCopy)
-            VerticalDivider(modifier = Modifier
-                .height(20.dp)
-                .width(1.dp), color = Color.Gray)
-            ToolbarButton(Icons.Default.Edit, "Note", onNote)
-        }
-    }
-}
-
-@Composable
-fun ToolbarButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    text: String,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            icon,
-            contentDescription = text,
-            tint = MaterialTheme.colorScheme.inverseOnSurface,
-            modifier = Modifier.size(18.dp)
-        )
-        Spacer(modifier = Modifier.width(4.dp))
-        Text(
-            text,
-            color = MaterialTheme.colorScheme.inverseOnSurface,
-            style = MaterialTheme.typography.labelLarge
-        )
-    }
-}
 
 @Composable
 fun NoteInputDialog(
@@ -1102,6 +980,7 @@ fun PageIndicator(currentPage: Int, totalPages: Int, modifier: Modifier = Modifi
         )
     }
 }
+
 class CustomTextToolbar(
     private val onShowMenu: (Rect) -> Unit,
     private val onHideMenu: () -> Unit,
@@ -1121,9 +1000,7 @@ class CustomTextToolbar(
         onSelectAllRequested: (() -> Unit)?
     ) {
         shown = true
-        // Pass the selection Rect up to the UI to position the Popup
         onShowMenu(rect)
-        // We capture the system copy request if needed, or we handle it ourselves
     }
 
     override fun hide() {
