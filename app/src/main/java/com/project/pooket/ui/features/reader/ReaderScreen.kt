@@ -82,7 +82,7 @@ fun ReaderScreen(
 ) {
     val scope = rememberCoroutineScope()
 
-    //viewmodel state
+    // ViewModel state
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val totalPages by viewModel.pageCount.collectAsStateWithLifecycle()
     val isVerticalMode by viewModel.isVerticalScrollMode.collectAsStateWithLifecycle()
@@ -90,10 +90,11 @@ fun ReaderScreen(
     val fontSize by viewModel.fontSize.collectAsStateWithLifecycle()
     val initialPage by viewModel.initialPage.collectAsStateWithLifecycle()
 
-    //ui-state
+    // UI State
     var masterPage by remember { mutableIntStateOf(0) }
     var isInitialized by remember { mutableStateOf(false) }
     var isSwitchingModes by remember { mutableStateOf(false) }
+    var isViewportLocked by remember { mutableStateOf(false) }
 
     val pagerState = rememberPagerState(pageCount = { totalPages })
     val listState = rememberLazyListState()
@@ -101,9 +102,8 @@ fun ReaderScreen(
         derivedStateOf { if (isVerticalMode) listState.firstVisibleItemIndex else pagerState.currentPage }
     }
 
-    //ui-controller
+    // UI Controls
     var showControls by remember { mutableStateOf(true) }
-
     val selectedText by viewModel.currentSelectionText.collectAsStateWithLifecycle()
     val clipboardManager = LocalClipboardManager.current
 
@@ -179,6 +179,8 @@ fun ReaderScreen(
                 visible = showControls,
                 isVertical = isVerticalMode,
                 isTextMode = isTextMode,
+                isLocked = isViewportLocked,
+                onToggleLock = { isViewportLocked = !isViewportLocked },
                 onToggleMode = viewModel::toggleReadingMode,
                 onToggleTextMode = viewModel::toggleTextMode,
                 onPrevPage = {
@@ -214,7 +216,12 @@ fun ReaderScreen(
                         .pointerInput(isVerticalMode, isTextMode) {
                             if (isTextMode) return@pointerInput
                             detectTapGestures(
-                                // onTap = { showControls = !showControls }, // Optional: toggle controls
+                                onTap = {
+                                    // 1. CLEAR SELECTION (Since we tapped outside/background)
+                                    viewModel.clearAllSelection()
+                                    // 2. TOGGLE CONTROLS
+                                    showControls = !showControls
+                                },
                                 onDoubleTap = {
                                     if (globalScale > 1f) {
                                         globalScale = 1f
@@ -225,11 +232,13 @@ fun ReaderScreen(
                                 }
                             )
                         }
-                        .pointerInput(isVerticalMode, isTextMode) {
+                        .pointerInput(isVerticalMode, isTextMode, isViewportLocked) {
                             if (isTextMode) return@pointerInput
                             detectTransformGestures { _, pan, zoom, _ ->
                                 val newScale = (globalScale * zoom).coerceIn(1f, 5f)
-                                val proposedOffset = globalOffset + pan
+                                // Lock Horizontal Pan if Locked
+                                val effectivePan = if (isViewportLocked) Offset(0f, pan.y) else pan
+                                val proposedOffset = globalOffset + effectivePan
                                 globalOffset = clampOffset(proposedOffset, newScale, size.toSize())
                                 globalScale = newScale
                             }
@@ -246,17 +255,9 @@ fun ReaderScreen(
                             state = listState,
                             modifier = Modifier.fillMaxSize(),
                         ) {
-                            items(
-                                count = totalPages,
-                                key = { it }
-                            ) { index ->
+                            items(count = totalPages, key = { it }) { index ->
                                 PdfPageItem(
-                                    index,
-                                    viewModel,
-                                    true,
-                                    isNightMode,
-                                    isTextMode,
-                                    fontSize,
+                                    index, viewModel, true, isNightMode, isTextMode, fontSize,
                                     currentZoom = globalScale
                                 )
                             }
@@ -264,16 +265,11 @@ fun ReaderScreen(
                     } else {
                         HorizontalPager(
                             state = pagerState,
-                            userScrollEnabled = !isTextMode && globalScale <= 1f,
+                            userScrollEnabled = !isTextMode && (globalScale <= 1f || isViewportLocked),
                             beyondViewportPageCount = 1
                         ) { index ->
                             PdfPageItem(
-                                index,
-                                viewModel,
-                                false,
-                                isNightMode,
-                                isTextMode,
-                                fontSize,
+                                index, viewModel, false, isNightMode, isTextMode, fontSize,
                                 currentZoom = globalScale
                             )
                         }
@@ -301,7 +297,6 @@ fun ReaderScreen(
                 }
             }
 
-            // UNIFIED SELECTION BAR
             AnimatedVisibility(
                 visible = selectedText != null,
                 enter = slideInVertically { -it } + fadeIn(),
@@ -340,58 +335,10 @@ fun ReaderScreen(
         NoteInputDialog(
             onDismiss = { showNoteDialog = false },
             onConfirm = { noteText ->
-                // FIX: Use the unified save function.
-                // It handles determining if we are in Text Mode (and need mapping)
-                // or Image Mode (and use existing rects).
                 viewModel.saveNote(noteText)
                 showNoteDialog = false
             }
         )
-    }
-}
-
-// --- FLOATING BAR ---
-@Composable
-fun SelectionControlBar(
-    onCopy: () -> Unit,
-    onNote: () -> Unit,
-    onClose: () -> Unit
-) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp),
-        shape = RoundedCornerShape(12.dp),
-        shadowElevation = 8.dp,
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        tonalElevation = 6.dp
-    ) {
-        Row(
-            modifier = Modifier
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                "Text Selected",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onCopy) {
-                    Icon(Icons.Default.ContentCopy, "Copy")
-                }
-                IconButton(onClick = onNote) {
-                    Icon(Icons.Default.Edit, "Note")
-                }
-                VerticalDivider(modifier = Modifier
-                    .height(24.dp)
-                    .padding(horizontal = 8.dp))
-                IconButton(onClick = onClose) {
-                    Icon(Icons.Default.Close, "Close")
-                }
-            }
-        }
     }
 }
 
@@ -412,19 +359,18 @@ fun PdfPageItem(
 
     // --- TEXT MODE LOGIC ---
     if (isTextMode) {
+        // (Text Mode logic remains exactly as before...)
         var textContent by remember { mutableStateOf<String?>(null) }
         var textFieldValue by remember(pageIndex, isTextMode) { mutableStateOf(TextFieldValue()) }
         var layoutResult by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
         val textSelection by viewModel.textSelection.collectAsStateWithLifecycle()
 
-        // Sync ViewModel -> Local
         LaunchedEffect(textSelection) {
             if (textSelection == null && !textFieldValue.selection.collapsed) {
                 textFieldValue = textFieldValue.copy(selection = TextRange.Zero)
             }
         }
 
-        // Load Text & Highlights
         LaunchedEffect(pageIndex, pageNotes) {
             if (textContent == null) textContent = viewModel.extractText(pageIndex)
             textContent?.let { raw ->
@@ -465,9 +411,7 @@ fun PdfPageItem(
                     .then(if (!isVerticalMode) Modifier.verticalScroll(rememberScrollState()) else Modifier)
             ) {
                 if (textContent == null) {
-                    Box(Modifier
-                        .fillMaxWidth()
-                        .height(400.dp), contentAlignment = Alignment.Center) {
+                    Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
                     }
                 } else {
@@ -486,15 +430,8 @@ fun PdfPageItem(
                             .bringIntoViewResponder(bringIntoViewResponder),
                         onTextLayout = { layoutResult = it }
                     )
-
-                    // Draw Note Icons for Text Mode
                     if (layoutResult != null) {
                         pageNotes.forEach { note ->
-                            // Notes saved in Text Mode have explicit ranges
-                            // Notes mapped from Image Mode might have been calculated in processTextHighlights
-                            // For icons, we rely on the `textRangeStart` which processTextHighlights updates in the note object ideally,
-                            // or we can just rely on the fact that `processTextHighlights` highlights the text color.
-                            // If you want icons for mapped notes, you'd need the range.
                             if (note.textRangeStart != null) {
                                     val bounds = layoutResult!!.getBoundingBox(note.textRangeStart!!)
                                     val iconX = bounds.left
@@ -506,10 +443,7 @@ fun PdfPageItem(
                 }
             }
         }
-
-        if (clickedNoteContent != null) {
-            NoteContentDialog(content = clickedNoteContent!!) { clickedNoteContent = null }
-        }
+        if (clickedNoteContent != null) NoteContentDialog(content = clickedNoteContent!!) { clickedNoteContent = null }
         return
     }
 
@@ -521,7 +455,6 @@ fun PdfPageItem(
     LaunchedEffect(pageNotes, isTextMode) {
         withContext(Dispatchers.Default) {
             val newMap = mutableMapOf<Long, List<NormRect>>()
-            // This now uses the unified `getRectsForNote` which handles both saved rects AND text-to-rect mapping
             pageNotes.forEach { note -> newMap[note.id] = viewModel.getRectsForNote(note) }
             withContext(Dispatchers.Main) { noteRectsMap = newMap }
         }
@@ -532,9 +465,7 @@ fun PdfPageItem(
     }
 
     val currentBitmap = bitmap ?: run {
-        Box(Modifier
-            .fillMaxWidth()
-            .height(400.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
         }
         return
@@ -553,11 +484,14 @@ fun PdfPageItem(
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val currentSel = viewModel.selectionState.value
+
+                    // 1. Check if touching a Drag Handle
                     val handleHit = if (currentSel?.pageIndex == pageIndex) {
                         viewModel.checkHandleHitUI(down.position, layoutSize, currentSel)
                     } else DragHandle.NONE
 
                     if (handleHit != DragHandle.NONE) {
+                        // --- DRAGGING HANDLE ---
                         down.consume()
                         viewModel.setDraggingHandle(handleHit)
                         drag(down.id) { change ->
@@ -566,17 +500,40 @@ fun PdfPageItem(
                         }
                         viewModel.onDragEnd()
                     } else {
+                        // --- LONG PRESS SELECTION ---
                         try {
+                            // Wait for long press timeout (e.g. 500ms)
                             withTimeout(500) {
                                 waitForUpOrCancellation()
-                                viewModel.clearSelection()
                             }
+                            // If we reach here, it was a short tap.
+                            // We do nothing and let the Parent `detectTapGestures` handle it.
                         } catch (e: PointerEventTimeoutCancellationException) {
+                            // --- TIMEOUT REACHED -> LONG PRESS ---
+
+                            // 1. Trigger Selection Calculation
                             viewModel.onLongPress(pageIndex, down.position, layoutSize)
-                            drag(down.id) { change ->
-                                change.consume()
-                                viewModel.onDrag(change.position, layoutSize)
+
+                            // 2. IMPORTANT: Consume the rest of the gesture (dragging or lifting)
+                            // REMOVED awaitPointerEventScope wrapper here
+                            val dragPointerId = down.id
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == dragPointerId }
+
+                                if (change == null) break // Pointer lost
+
+                                if (change.changedToUp()) {
+                                    change.consume() // <--- CRITICAL FIX: Consume UP event
+                                    break
+                                }
+
+                                if (change.positionChanged()) {
+                                    change.consume()
+                                    viewModel.onDrag(change.position, layoutSize)
+                                }
                             }
+
                             viewModel.onDragEnd()
                         }
                     }
@@ -618,7 +575,6 @@ fun PdfPageItem(
                     val sortedRects = rects.sortedBy { it.top }
                     val first = sortedRects.first()
                     val last = sortedRects.last()
-                    // Use passed currentZoom to scale handles
                     val baseRadius = 12.dp.toPx()
                     val scaledRadius = baseRadius / currentZoom
                     drawAndroidSelectionHandle(first.left * w, first.bottom * h, scaledRadius, true)
@@ -648,8 +604,77 @@ fun PdfPageItem(
     }
 }
 
-// --- HELPER COMPOSABLES ---
+// ... (Helper Composables: NoteIcon, NoteContentDialog, drawAndroidSelectionHandle, Dp.toPx, SelectionControlBar, NoteInputDialog, NotesListSheet, FontSizeControl, ReaderTopBar, PageIndicator, CustomTextToolbar)
+// Ensure you keep these exactly as they were in the previous iteration.
 
+@Composable
+fun ReaderControls(
+    visible: Boolean,
+    isVertical: Boolean,
+    isTextMode: Boolean,
+    isLocked: Boolean,
+    onToggleLock: () -> Unit,
+    onToggleMode: () -> Unit,
+    onToggleTextMode: () -> Unit,
+    onPrevPage: () -> Unit,
+    onNextPage: () -> Unit
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn() + slideInVertically { it / 2 },
+        exit = fadeOut() + slideOutVertically { it / 2 }
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 32.dp, start = 20.dp, end = 20.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SmallFloatingActionButton(
+                onClick = onPrevPage,
+                containerColor = MaterialTheme.colorScheme.surface
+            ) {
+                Icon(Icons.Default.ChevronLeft, "Prev")
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                FloatingActionButton(onClick = onToggleMode) {
+                    Icon(
+                        if (isVertical) Icons.Default.SwapVert else Icons.Default.ViewCarousel,
+                        "Mode"
+                    )
+                }
+                FloatingActionButton(
+                    onClick = onToggleLock,
+                    containerColor = if (isLocked) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer
+                ) {
+                    Icon(
+                        if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                        "Lock"
+                    )
+                }
+                FloatingActionButton(
+                    onClick = onToggleTextMode,
+                    containerColor = if (isTextMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Icon(
+                        if (isTextMode) Icons.Default.Image else Icons.Default.TextFields,
+                        "Text"
+                    )
+                }
+            }
+
+            SmallFloatingActionButton(
+                onClick = onNextPage,
+                containerColor = MaterialTheme.colorScheme.surface
+            ) {
+                Icon(Icons.Default.ChevronRight, "Next")
+            }
+        }
+    }
+}
+// ... (Include other helpers: NoteIcon, NoteContentDialog, drawAndroidSelectionHandle, Dp.toPx, SelectionControlBar, NoteInputDialog, NotesListSheet, FontSizeControl, ReaderTopBar, PageIndicator, CustomTextToolbar) ...
 @Composable
 fun NoteIcon(
     x: Float,
@@ -666,7 +691,7 @@ fun NoteIcon(
             .background(Color.White, CircleShape)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
-                indication = null,
+                indication = null, // Disable ripple for cleaner look on small icons
                 onClick = onClick
             )
     ) {
@@ -736,12 +761,54 @@ fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAndroidSelectionHandle(
         )
         path.lineTo(x, y)
     }
-
     drawPath(path, color)
 }
 
 @Composable
 fun Dp.toPx(density: androidx.compose.ui.unit.Density) = with(density) { this@toPx.toPx() }
+
+@Composable
+fun SelectionControlBar(
+    onCopy: () -> Unit,
+    onNote: () -> Unit,
+    onClose: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        shape = RoundedCornerShape(12.dp),
+        shadowElevation = 8.dp,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest, // Distinct color
+        tonalElevation = 6.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                "Text Selected",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onCopy) {
+                    Icon(Icons.Default.ContentCopy, "Copy")
+                }
+                IconButton(onClick = onNote) {
+                    Icon(Icons.Default.Edit, "Note")
+                }
+                VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 8.dp))
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Default.Close, "Close")
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun NoteInputDialog(
@@ -776,7 +843,6 @@ fun NoteInputDialog(
         }
     )
 }
-
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -852,63 +918,6 @@ fun NotesListSheet(
                         Text("No notes yet.", color = Color.Gray)
                     }
                 }
-            }
-        }
-    }
-}
-
-@Composable
-fun ReaderControls(
-    visible: Boolean,
-    isVertical: Boolean,
-    isTextMode: Boolean,
-    onToggleMode: () -> Unit,
-    onToggleTextMode: () -> Unit,
-    onPrevPage: () -> Unit,
-    onNextPage: () -> Unit
-) {
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn() + slideInVertically { it / 2 },
-        exit = fadeOut() + slideOutVertically { it / 2 }
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 32.dp, start = 20.dp, end = 20.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            SmallFloatingActionButton(
-                onClick = onPrevPage,
-                containerColor = MaterialTheme.colorScheme.surface
-            ) {
-                Icon(Icons.Default.ChevronLeft, "Prev")
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                FloatingActionButton(onClick = onToggleMode) {
-                    Icon(
-                        if (isVertical) Icons.Default.SwapVert else Icons.Default.ViewCarousel,
-                        "Mode"
-                    )
-                }
-                FloatingActionButton(
-                    onClick = onToggleTextMode,
-                    containerColor = if (isTextMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer
-                ) {
-                    Icon(
-                        if (isTextMode) Icons.Default.Image else Icons.Default.TextFields,
-                        "Text Mode"
-                    )
-                }
-            }
-
-            SmallFloatingActionButton(
-                onClick = onNextPage,
-                containerColor = MaterialTheme.colorScheme.surface
-            ) {
-                Icon(Icons.Default.ChevronRight, "Next")
             }
         }
     }
