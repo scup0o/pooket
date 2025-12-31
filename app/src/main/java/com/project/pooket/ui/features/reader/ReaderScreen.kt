@@ -11,8 +11,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.relocation.BringIntoViewResponder
-import androidx.compose.foundation.relocation.bringIntoViewResponder
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -26,6 +24,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -33,6 +32,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -43,8 +43,10 @@ import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.TextToolbar
 import androidx.compose.ui.platform.TextToolbarStatus
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
@@ -196,7 +198,7 @@ fun ReaderScreen(
                             detectTapGestures(
                                 onTap = {
                                     viewModel.clearAllSelection()
-                                    showControls = !showControls
+//                                    showControls = !showControls
                                 },
                                 onDoubleTap = {
                                     if (globalScale > 1f) {
@@ -365,7 +367,7 @@ private fun PdfTextPage(
 ) {
     var textContent by remember { mutableStateOf<String?>(null) }
     var textFieldValue by remember(pageIndex) { mutableStateOf(TextFieldValue()) }
-    var layoutResult by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
+    var layoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
     val textSelection by viewModel.textSelection.collectAsStateWithLifecycle()
 
     // Sync Selection from ViewModel (e.g., clear command)
@@ -385,14 +387,6 @@ private fun PdfTextPage(
         }
     }
 
-    // Prevent LazyColumn interference
-    val bringIntoViewResponder = remember {
-        object : BringIntoViewResponder {
-            override fun calculateRectForParent(localRect: Rect): Rect = Rect.Zero
-            override suspend fun bringChildIntoView(localRect: () -> Rect?) {}
-        }
-    }
-
     // Custom Toolbar to capture "Copy" or "Note"
     val customToolbar = remember {
         CustomTextToolbar(
@@ -405,7 +399,9 @@ private fun PdfTextPage(
                     } catch (_: Exception) {}
                 }
             },
-            onHideMenu = {},
+            onHideMenu = {
+//                viewModel.clearAllSelection()
+            },
             onCopy = {}
         )
     }
@@ -421,6 +417,11 @@ private fun PdfTextPage(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 24.dp)
+                .pointerInput(Unit) {
+                    detectTapGestures {
+                        viewModel.clearAllSelection()
+                    }
+                }
                 // Only scroll internally if NOT in Vertical Mode (LazyColumn handles Vertical)
                 .then(if (!isVerticalMode) Modifier.verticalScroll(rememberScrollState()) else Modifier)
         ) {
@@ -431,8 +432,15 @@ private fun PdfTextPage(
             } else {
                 BasicTextField(
                     value = textFieldValue,
-                    onValueChange = { if (it.text == textFieldValue.text) textFieldValue = it },
-                    readOnly = true,
+                    onValueChange = {
+                        if (it.text == textFieldValue.text) {
+                            textFieldValue = it
+                            // FIX: If user taps TEXT to move cursor (collapsing selection), clear the toolbar
+                            if (it.selection.collapsed) {
+                                viewModel.clearAllSelection()
+                            }
+                        }
+                    },                    readOnly = true,
                     textStyle = TextStyle(
                         fontSize = fontSize.sp,
                         lineHeight = (fontSize * 1.5).sp,
@@ -440,19 +448,23 @@ private fun PdfTextPage(
                         textAlign = TextAlign.Justify
                     ),
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .bringIntoViewResponder(bringIntoViewResponder),
+                        .fillMaxWidth(),
                     onTextLayout = { layoutResult = it }
                 )
 
                 // Render Note Icons
                 if (layoutResult != null) {
+                    val textLen = layoutResult!!.layoutInput.text.text.length // Get actual length
+
                     pageNotes.forEach { note ->
                         note.textRangeStart?.let { start ->
+                            // FIX: Only try to get bounds if text is not empty and start is valid
+                            if (textLen > 0 && start < textLen) {
                                 val bounds = layoutResult!!.getBoundingBox(start)
                                 val iconX = bounds.left
                                 val iconY = bounds.top - 24.dp.toPx(LocalDensity.current)
                                 NoteIcon(iconX, iconY, 24.dp, onClick = { onNoteClick(note.noteContent) })
+                            }
                         }
                     }
                 }
@@ -473,37 +485,40 @@ private fun PdfImagePage(
     pageNotes: List<NoteEntity>,
     onNoteClick: (String) -> Unit
 ) {
-    var bitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var layoutSize by remember { mutableStateOf(Size.Zero) }
+    // 1. OPTIMIZATION: Use produceState to handle cancellation automatically on scroll
+    val bitmap by produceState<Bitmap?>(initialValue = null, key1 = pageIndex) {
+        value = viewModel.renderPage(pageIndex)
+    }
 
-    // Async Note Rect Loading (Only if needed, now much faster due to NoteEntity optimization)
-    // We map noteId -> List<Rect>
-    var noteRectsMap by remember { mutableStateOf<Map<Long, List<NormRect>>>(emptyMap()) }
-
-    LaunchedEffect(pageNotes) {
-        withContext(Dispatchers.Default) {
-            val newMap = mutableMapOf<Long, List<NormRect>>()
-            // Direct access to note.rects is safe and fast now
+    // 2. OPTIMIZATION: Calculate rects efficiently.
+    // If the page recycles (scrolls away), this block cancels immediately, saving CPU.
+    val noteRectsMap by produceState<Map<Long, List<NormRect>>>(initialValue = emptyMap(), key1 = pageNotes) {
+        val newMap = withContext(Dispatchers.Default) {
+            val map = mutableMapOf<Long, List<NormRect>>()
             pageNotes.forEach { note ->
-                newMap[note.id] = viewModel.getRectsForNote(note)
+                map[note.id] = viewModel.getRectsForNote(note)
             }
-            withContext(Dispatchers.Main) { noteRectsMap = newMap }
+            map
         }
+        value = newMap
     }
 
-    LaunchedEffect(pageIndex) {
-        if (bitmap == null) bitmap = viewModel.renderPage(pageIndex)
-    }
+    // 3. OPTIMIZATION: Pass State<T> instead of T.
+    // This prevents the parent (PdfImagePage) from recomposing when selection changes.
+    // We only read this state inside the Canvas draw block.
+    val selectionState by viewModel.selectionState.collectAsStateWithLifecycle()
 
-    val currentBitmap = bitmap ?: run {
+    // Fallback for loading
+    if (bitmap == null) {
         Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
         }
         return
     }
 
+    val currentBitmap = bitmap!!
     val pdfAspectRatio = currentBitmap.width.toFloat() / currentBitmap.height.toFloat()
-    val selection by viewModel.selectionState.collectAsStateWithLifecycle()
+    var layoutSize by remember { mutableStateOf(Size.Zero) }
 
     Box(
         modifier = Modifier
@@ -512,8 +527,10 @@ private fun PdfImagePage(
             .background(if (isNightMode) Color.Black else Color.White)
             .onGloballyPositioned { layoutSize = it.size.toSize() }
             .pointerInput(pageIndex) {
+                // Gesture logic remains the same...
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
+                    // We read value directly from VM state here to ensure latest data without recomposition
                     val currentSel = viewModel.selectionState.value
 
                     val handleHit = if (currentSel?.pageIndex == pageIndex) {
@@ -521,7 +538,6 @@ private fun PdfImagePage(
                     } else DragHandle.NONE
 
                     if (handleHit != DragHandle.NONE) {
-                        // --- DRAGGING HANDLE ---
                         down.consume()
                         viewModel.setDraggingHandle(handleHit)
                         drag(down.id) { change ->
@@ -530,22 +546,16 @@ private fun PdfImagePage(
                         }
                         viewModel.onDragEnd()
                     } else {
-                        // --- LONG PRESS SELECTION ---
                         try {
                             withTimeout(500) { waitForUpOrCancellation() }
                         } catch (e: PointerEventTimeoutCancellationException) {
                             viewModel.onLongPress(pageIndex, down.position, layoutSize)
-
-                            // Consume UP event to prevent parent taking over
                             val dragPointerId = down.id
                             while (true) {
                                 val event = awaitPointerEvent()
                                 val change = event.changes.firstOrNull { it.id == dragPointerId }
                                 if (change == null) break
-                                if (change.changedToUp()) {
-                                    change.consume()
-                                    break
-                                }
+                                if (change.changedToUp()) { change.consume(); break }
                                 if (change.positionChanged()) {
                                     change.consume()
                                     viewModel.onDrag(change.position, layoutSize)
@@ -556,7 +566,58 @@ private fun PdfImagePage(
                     }
                 }
             }
+            .drawWithContent {
+                // 4. OPTIMIZATION: Drawing Layer
+                // This block runs every frame during drag, BUT it does not trigger "Recomposition"
+                // of the Box or the Image. It only repaints the pixels.
+
+                // A. Draw the PDF Bitmap
+                drawContent() // Draws the child (Image)
+
+                val w = size.width
+                val h = size.height
+
+                // B. Draw Notes
+                pageNotes.forEach { note ->
+                    val rects = noteRectsMap[note.id] ?: emptyList()
+                    rects.forEach { rect ->
+                        drawRect(
+                            color = Color(0x66FFEB3B),
+                            topLeft = Offset(rect.left * w, rect.top * h),
+                            size = Size((rect.right - rect.left) * w, (rect.bottom - rect.top) * h)
+                        )
+                    }
+                }
+
+                // C. Draw Selection
+                // We read 'selectionState' HERE. Since we are in the Draw phase,
+                // changes to this state trigger 'invalidate', NOT 'recompose'.
+                val sel = selectionState
+                if (sel?.pageIndex == pageIndex) {
+                    val rects = sel.rects
+                    rects.forEach { rect ->
+                        drawRect(
+                            color = Color(0x4D2196F3),
+                            topLeft = Offset(rect.left * w, rect.top * h),
+                            size = Size((rect.right - rect.left) * w, (rect.bottom - rect.top) * h)
+                        )
+                    }
+                    if (rects.isNotEmpty()) {
+                        val sortedRects = rects.sortedBy { it.top }
+                        val first = sortedRects.first()
+                        val last = sortedRects.last()
+                        val baseRadius = 9.dp.toPx()
+                        val scaledRadius = baseRadius / currentZoom
+
+                        // Helper extension needs to be available
+                        drawAndroidSelectionHandle(first.left * w, first.bottom * h, scaledRadius, true)
+                        drawAndroidSelectionHandle(last.right * w, last.bottom * h, scaledRadius, false)
+                    }
+                }
+            }
     ) {
+        // The heavy Image is now just "Content" drawn by drawContent()
+        // It will NOT reload/re-layout when you drag the selection handle.
         Image(
             bitmap = currentBitmap.asImageBitmap(),
             contentDescription = null,
@@ -570,36 +631,7 @@ private fun PdfImagePage(
             ))) else null
         )
 
-        Canvas(modifier = Modifier.matchParentSize()) {
-            val w = size.width
-            val h = size.height
-
-            // Draw Notes
-            pageNotes.forEach { note ->
-                val rects = noteRectsMap[note.id] ?: emptyList()
-                rects.forEach { rect ->
-                    drawRect(Color(0x66FFEB3B), Offset(rect.left * w, rect.top * h), Size((rect.right - rect.left) * w, (rect.bottom - rect.top) * h))
-                }
-            }
-
-            // Draw Selection
-            if (selection?.pageIndex == pageIndex) {
-                val rects = selection!!.rects
-                rects.forEach { rect ->
-                    drawRect(Color(0x4D2196F3), Offset(rect.left * w, rect.top * h), Size((rect.right - rect.left) * w, (rect.bottom - rect.top) * h))
-                }
-                if (rects.isNotEmpty()) {
-                    val sortedRects = rects.sortedBy { it.top }
-                    val first = sortedRects.first()
-                    val last = sortedRects.last()
-                    val baseRadius = 12.dp.toPx()
-                    val scaledRadius = baseRadius / currentZoom
-                    drawAndroidSelectionHandle(first.left * w, first.bottom * h, scaledRadius, true)
-                    drawAndroidSelectionHandle(last.right * w, last.bottom * h, scaledRadius, false)
-                }
-            }
-        }
-
+        // Note Icons Layer (Clickable elements must remain in Composition)
         if (layoutSize != Size.Zero) {
             pageNotes.forEach { note ->
                 val rects = noteRectsMap[note.id] ?: emptyList()
@@ -733,25 +765,60 @@ fun NoteContentDialog(content: String, onDismiss: () -> Unit) {
     )
 }
 
-fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAndroidSelectionHandle(
+fun DrawScope.drawAndroidSelectionHandle(
     x: Float,
     y: Float,
     radius: Float,
     isLeft: Boolean
 ) {
-    val color = Color(0xFF2196F3)
-    val path = androidx.compose.ui.graphics.Path()
-    path.moveTo(x, y)
+    val handleColor = Color(0xFF2196F3) // Standard Android Blue
+    val path = Path()
+
     if (isLeft) {
-        path.quadraticBezierTo(x - radius, y + (radius * 0.5f), x - radius, y + radius)
-        path.arcTo(Rect(center = Offset(x - (radius * 0.8f), y + radius), radius = radius), 135f, 270f, false)
-        path.lineTo(x, y)
+        // --- LEFT HANDLE (Start) ---
+        // Tip points Top-Right (to x, y)
+        // Body hangs Bottom-Left
+        val centerX = x - radius
+        val centerY = y + radius
+
+        path.moveTo(x, y)                          // 1. Start at Tip
+        path.lineTo(x, y + radius)                 // 2. Line Vertical Down
+        path.arcTo(                                // 3. Arc 270 degrees Clockwise (0 -> 270)
+            rect = Rect(
+                left = centerX - radius,
+                top = centerY - radius,
+                right = centerX + radius,
+                bottom = centerY + radius
+            ),
+            forceMoveTo = false,
+            startAngleDegrees = 0f,
+            sweepAngleDegrees = 270f
+        )
+        path.lineTo(x, y)                          // 4. Close loop back to Tip
     } else {
-        path.quadraticBezierTo(x + radius, y + (radius * 0.5f), x + radius, y + radius)
-        path.arcTo(Rect(center = Offset(x + (radius * 0.8f), y + radius), radius = radius), 135f, -270f, false)
-        path.lineTo(x, y)
+        // --- RIGHT HANDLE (End) ---
+        // Tip points Top-Left (to x, y)
+        // Body hangs Bottom-Right
+        val centerX = x + radius
+        val centerY = y + radius
+
+        path.moveTo(x, y)                          // 1. Start at Tip
+        path.lineTo(x, y + radius)                 // 2. Line Vertical Down
+        path.arcTo(                                // 3. Arc 270 degrees Counter-Clockwise (180 -> -90/270)
+            rect = Rect(
+                left = centerX - radius,
+                top = centerY - radius,
+                right = centerX + radius,
+                bottom = centerY + radius
+            ),
+            startAngleDegrees = 180f,
+            sweepAngleDegrees = -270f,
+            forceMoveTo = false
+        )
+        path.lineTo(x, y)                          // 4. Close loop back to Tip
     }
-    drawPath(path, color)
+
+    drawPath(path, handleColor)
 }
 
 @Composable
@@ -789,7 +856,7 @@ fun NotesListSheet(notes: List<NoteEntity>, onNoteClick: (NoteEntity) -> Unit, o
                     }
                     Spacer(Modifier.height(4.dp))
                     if (note.noteContent.isNotEmpty()) Text(note.noteContent, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                    Text("\"${note.originalText}\"", style = MaterialTheme.typography.bodySmall, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.background(Color(0xFFFFF9C4)).padding(4.dp))
+                    Text("\"${note.originalText}\"", style = MaterialTheme.typography.bodySmall, fontStyle = FontStyle.Italic, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.background(Color(0xFFFFF9C4)).padding(4.dp))
                 }
                 HorizontalDivider()
             }

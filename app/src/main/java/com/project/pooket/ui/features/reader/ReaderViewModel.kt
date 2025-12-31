@@ -24,6 +24,7 @@ import com.project.pooket.data.local.note.NormRect
 import com.project.pooket.data.local.note.NoteEntity
 import com.project.pooket.data.local.note.NoteRepository
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -32,14 +33,13 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.OutputStreamWriter
 import javax.inject.Inject
 import kotlin.math.abs
 import kotlin.math.sqrt
 
 enum class DragHandle { NONE, START, END }
-
-// Pre-compile Regex for performance (used frequently in search/highlight)
 private val WHITESPACE_REGEX = "\\s+".toRegex()
 
 @HiltViewModel
@@ -48,50 +48,152 @@ class ReaderViewModel @Inject constructor(
     private val repository: BookLocalRepository,
     private val noteRepository: NoteRepository
 ) : ViewModel() {
-
-    // --- State Flows ---
+    //services & jobs
     private val _pdfRenderer = MutableStateFlow<PdfRenderer?>(null)
+    private val renderMutex = Mutex()
+    private val pdfBoxMutex = Mutex()
+    private var fileDescriptor: ParcelFileDescriptor? = null
+    private var pdDocument: PDDocument? = null
+    private var saveJob: Job? = null
 
+    //ui universal state
+    private var currentBookUri: String? = null
     private val _pageCount = MutableStateFlow(0)
     val pageCount = _pageCount.asStateFlow()
-
     private val _isLoading = MutableStateFlow(true)
     val isLoading = _isLoading.asStateFlow()
-
     private val _isVerticalScrollMode = MutableStateFlow(false)
     val isVerticalScrollMode = _isVerticalScrollMode.asStateFlow()
-
     private val _isTextMode = MutableStateFlow(false)
     val isTextMode = _isTextMode.asStateFlow()
-
     private val _fontSize = MutableStateFlow(16f)
     val fontSize = _fontSize.asStateFlow()
-
     private val _initialPage = MutableStateFlow(0)
     val initialPage = _initialPage.asStateFlow()
 
+    // note state
     private val _notes = MutableStateFlow<List<NoteEntity>>(emptyList())
     val notes = _notes.asStateFlow()
 
-    // --- Caches & Resources ---
-    // Cache ~1/4th of available memory for Bitmaps
+    data class SelectionState(
+        val pageIndex: Int,
+        val startWordIndex: Int,
+        val endWordIndex: Int,
+        val selectedText: String,
+        val rects: List<NormRect>,
+        val activeHandle: DragHandle = DragHandle.NONE
+    )
+    private val _selectionState = MutableStateFlow<SelectionState?>(null)
+    val selectionState = _selectionState.asStateFlow()
+
+    data class TextSelectionState(
+        val pageIndex: Int,
+        val text: String,
+        val range: TextRange
+    )
+    private val _textSelection = MutableStateFlow<TextSelectionState?>(null)
+    val textSelection = _textSelection.asStateFlow()
+    val currentSelectionText = combine(_selectionState, _textSelection, _isTextMode) { img, txt, isText ->
+        if (isText) txt?.text else img?.selectedText
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
+
+    // cache
     private val bitmapCache = object : LruCache<Int, Bitmap>((Runtime.getRuntime().maxMemory() / 1024 / 4).toInt()) {
         override fun sizeOf(key: Int, value: Bitmap): Int = value.byteCount / 1024
     }
-    // Lightweight cache for raw text and coordinate-mapped characters
     private val textCache = LruCache<Int, String>(100)
-    private val pageCharsCache = mutableMapOf<Int, List<PdfChar>>()
-
-    private val rendererMutex = Mutex()
-    private var fileDescriptor: ParcelFileDescriptor? = null
-    private var pdDocument: PDDocument? = null // Heavy object, lazy loaded
-    private var currentBookUri: String? = null
-    private var saveJob: Job? = null
+    private val pageCharsCache = LruCache<Int, List<PdfChar>>(50)
 
     init {
         PDFBoxResourceLoader.init(app)
+        viewModelScope.launch(Dispatchers.IO){
+            trimBookCache()
+        }
     }
 
+    //clean up
+    override fun onCleared() {
+        super.onCleared()
+        cleanupResources()
+    }
+
+    private fun trimBookCache() {
+        val cacheDir = app.cacheDir
+        val maxCacheSize = 100 * 1024 * 1024L //100 MB limit
+        val maxFileCount = 5 // max 5 recent books
+
+        val bookFiles = cacheDir.listFiles { _, name ->
+            name.startsWith("cached_book_") && name.endsWith(".pdf")
+        } ?: return
+
+        val sortedFiles = bookFiles.sortedBy { it.lastModified() }.toMutableList()
+
+        var currentTotalSize = sortedFiles.sumOf { it.length() }
+
+        while (sortedFiles.isNotEmpty() && (currentTotalSize > maxCacheSize || sortedFiles.size > maxFileCount)) {
+            val fileToDelete = sortedFiles.removeAt(0)
+            if (fileToDelete.exists()) {
+                val size = fileToDelete.length()
+                if (fileToDelete.delete()) {
+                    currentTotalSize -= size
+                    Log.d("ReaderVM", "Cleaned up old cache file: ${fileToDelete.name}")
+                }
+            }
+        }
+    }
+
+    private fun cleanupResources() {
+        CoroutineScope(Dispatchers.IO + NonCancellable).launch {
+            renderMutex.withLock {
+                try {
+                    _pdfRenderer.value?.close()
+                    _pdfRenderer.value = null
+                    fileDescriptor?.close()
+                    fileDescriptor = null
+                    bitmapCache.evictAll()
+                } catch (e: Exception) { Log.e("ReaderVM", "Renderer cleanup error", e) }
+            }
+
+            pdfBoxMutex.withLock {
+                try {
+                    pdDocument?.close()
+                    pdDocument = null
+                    textCache.evictAll()
+                    pageCharsCache.evictAll()// Ensure this is the LruCache version
+                } catch (e: Exception) { Log.e("ReaderVM", "PDFBox cleanup error", e) }
+            }
+        }
+    }
+
+    //load + render pdf
+    private fun getTempFile(uri: String): File {
+        val filename = "cached_book_${uri.hashCode()}.pdf"
+        return File(app.cacheDir, filename)
+    }
+
+    private fun ensurePdDocumentLoaded(): PDDocument? {
+        if (pdDocument == null && currentBookUri != null) {
+            try {
+                val tempFile = getTempFile(currentBookUri!!)
+
+                if (!tempFile.exists()) {
+                    val uri = currentBookUri!!.toUri()
+                    app.contentResolver.openInputStream(uri)?.use { input ->
+                        val tmpWriteFile = File(tempFile.parent, "${tempFile.name}.tmp")
+                        tmpWriteFile.outputStream().use { output -> input.copyTo(output) }
+                        tmpWriteFile.renameTo(tempFile)
+                    }
+                } else {
+                    tempFile.setLastModified(System.currentTimeMillis())
+                }
+
+                pdDocument = PDDocument.load(tempFile, MemoryUsageSetting.setupTempFileOnly())
+            } catch (e: Exception) {
+                Log.e("ReaderVM", "Failed to load PDDocument", e)
+            }
+        }
+        return pdDocument
+    }
     fun loadPdf(uriString: String) {
         if (currentBookUri == uriString && _pdfRenderer.value != null) {
             _isLoading.value = false
@@ -129,47 +231,19 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    private fun cleanupResources() {
-        // Launch on IO + NonCancellable to ensure cleanup finishes even if VM dies
-        CoroutineScope(Dispatchers.IO + NonCancellable).launch {
-            rendererMutex.withLock {
-                try {
-                    pdDocument?.close()
-                    pdDocument = null
-                    _pdfRenderer.value?.close()
-                    _pdfRenderer.value = null
-                    fileDescriptor?.close()
-                    fileDescriptor = null
-                    bitmapCache.evictAll()
-                    textCache.evictAll()
-                    pageCharsCache.clear()
-                } catch (e: Exception) {
-                    Log.e("ReaderVM", "Cleanup error", e)
-                }
-            }
-        }
-    }
-
-    // ----------------------------------------------------------------------
-    // RENDERING & TEXT EXTRACTION
-    // ----------------------------------------------------------------------
-
     suspend fun renderPage(index: Int): Bitmap? = withContext(Dispatchers.Default) {
         val renderer = _pdfRenderer.value ?: return@withContext null
         bitmapCache.get(index)?.let { return@withContext it }
 
-        rendererMutex.withLock {
-            // Double check cache after acquiring lock
+        renderMutex.withLock {
             bitmapCache.get(index)?.let { return@withLock it }
 
             var page: PdfRenderer.Page? = null
             try {
                 page = renderer.openPage(index)
 
-                // Calculate optimal bitmap size based on screen density
                 val displayMetrics = app.resources.displayMetrics
                 val screenWidth = displayMetrics.widthPixels
-                // Cap density multiplier to avoid OOM on very high res screens
                 val densityMult = if (displayMetrics.density > 2) 1.5f else 2.0f
                 val targetWidth = (screenWidth * densityMult).toInt()
                 val targetHeight = (targetWidth.toFloat() / page.width * page.height).toInt()
@@ -192,7 +266,8 @@ class ReaderViewModel @Inject constructor(
     suspend fun extractText(index: Int): String = withContext(Dispatchers.IO) {
         textCache.get(index)?.let { return@withContext it }
 
-        rendererMutex.withLock {
+        pdfBoxMutex.withLock {
+            yield()
             textCache.get(index)?.let { return@withLock it }
             ensurePdDocumentLoaded() ?: return@withLock ""
 
@@ -212,25 +287,7 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    // Helper to lazy load the heavy PDFBox document safely
-    private fun ensurePdDocumentLoaded(): PDDocument? {
-        if (pdDocument == null && currentBookUri != null) {
-            try {
-                val uri = currentBookUri!!.toUri()
-                app.contentResolver.openInputStream(uri)?.use { stream ->
-                    pdDocument = PDDocument.load(stream)
-                }
-            } catch (e: Exception) {
-                Log.e("ReaderVM", "Failed to load PDDocument", e)
-            }
-        }
-        return pdDocument
-    }
-
-    // ----------------------------------------------------------------------
-    // UI CONTROLS & SELECTION STATE
-    // ----------------------------------------------------------------------
-
+    //ui control
     fun toggleReadingMode() {
         _isVerticalScrollMode.value = !_isVerticalScrollMode.value
         clearAllSelection()
@@ -246,48 +303,14 @@ class ReaderViewModel @Inject constructor(
         val uri = currentBookUri ?: return
         saveJob?.cancel()
         saveJob = viewModelScope.launch {
-            delay(500)
+            delay(1000)
             repository.saveProgress(uri, pageIndex)
         }
     }
 
     fun setFontSize(size: Float) { _fontSize.value = size }
 
-    override fun onCleared() {
-        super.onCleared()
-        cleanupResources()
-    }
-
-    // --- Selection States ---
-    data class SelectionState(
-        val pageIndex: Int,
-        val startWordIndex: Int,
-        val endWordIndex: Int,
-        val selectedText: String,
-        val rects: List<NormRect>,
-        val activeHandle: DragHandle = DragHandle.NONE
-    )
-    private val _selectionState = MutableStateFlow<SelectionState?>(null)
-    val selectionState = _selectionState.asStateFlow()
-
-    data class TextSelectionState(
-        val pageIndex: Int,
-        val text: String,
-        val range: TextRange
-    )
-    private val _textSelection = MutableStateFlow<TextSelectionState?>(null)
-    val textSelection = _textSelection.asStateFlow()
-
-    // Unified selection text for UI consumption
-    val currentSelectionText = combine(_selectionState, _textSelection, _isTextMode) { img, txt, isText ->
-        if (isText) txt?.text else img?.selectedText
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
-
-
-    // ----------------------------------------------------------------------
-    // NOTE LOGIC
-    // ----------------------------------------------------------------------
-
+    // note
     fun loadNotes(uri: String) {
         viewModelScope.launch {
             noteRepository.getNotes(uri).collect { _notes.value = it }
@@ -298,7 +321,6 @@ class ReaderViewModel @Inject constructor(
         val uri = currentBookUri ?: return
         viewModelScope.launch {
             val noteEntity = if (_isTextMode.value) {
-                // TEXT MODE: Calculate rects from text for syncing
                 val sel = _textSelection.value
                 if (sel != null && !sel.range.collapsed) {
                     val rects = findRectsForText(sel.pageIndex, sel.text)
@@ -307,13 +329,12 @@ class ReaderViewModel @Inject constructor(
                         pageIndex = sel.pageIndex,
                         originalText = sel.text,
                         noteContent = noteContent,
-                        rects = rects, // List passed directly
+                        rects = rects,
                         textRangeStart = sel.range.start,
                         textRangeEnd = sel.range.end
                     )
                 } else null
             } else {
-                // IMAGE MODE: Use existing selection rects
                 val sel = _selectionState.value
                 if (sel != null) {
                     NoteEntity(
@@ -321,7 +342,7 @@ class ReaderViewModel @Inject constructor(
                         pageIndex = sel.pageIndex,
                         originalText = sel.selectedText,
                         noteContent = noteContent,
-                        rects = sel.rects // List passed directly
+                        rects = sel.rects
                     )
                 } else null
             }
@@ -338,32 +359,37 @@ class ReaderViewModel @Inject constructor(
     // ----------------------------------------------------------------------
 
     suspend fun getPageChars(pageIndex: Int): List<PdfChar> = withContext(Dispatchers.IO) {
-        // Fast return from cache
-        if (pageCharsCache.containsKey(pageIndex)) return@withContext pageCharsCache[pageIndex]!!
-
-        rendererMutex.withLock {
-            // Check cache again inside lock
-            if (pageCharsCache.containsKey(pageIndex)) return@withLock pageCharsCache[pageIndex]!!
+        pageCharsCache.get(pageIndex)?.let { return@withContext it }
+        pdfBoxMutex.withLock {
+            pageCharsCache.get(pageIndex)?.let { return@withLock it }
 
             try {
                 ensurePdDocumentLoaded()
                 val doc = pdDocument ?: return@withLock emptyList()
+                if (pageIndex < 0 || pageIndex >= doc.numberOfPages) return@withLock emptyList()
                 val page = doc.getPage(pageIndex)
 
-                // Optimized Stripper
                 val stripper = CoordinateTextStripper(page)
                 stripper.startPage = pageIndex + 1
                 stripper.endPage = pageIndex + 1
 
-                // Write to dummy stream to trigger parsing
+                // dummy write to trigger parsing
                 stripper.writeText(doc, OutputStreamWriter(ByteArrayOutputStream()))
 
-                pageCharsCache[pageIndex] = stripper.chars
-                stripper.chars
+                val chars = stripper.chars
+                pageCharsCache.put(pageIndex, chars)
+
+                chars
             } catch (e: Exception) {
+                Log.e("ReaderVM", "Error parsing chars for page $pageIndex", e)
                 emptyList()
             }
         }
+    }
+
+    suspend fun getRectsForNote(note: NoteEntity): List<NormRect> {
+        if (note.rects.isNotEmpty()) return note.rects
+        return findRectsForText(note.pageIndex, note.originalText)
     }
 
     suspend fun findRectsForText(pageIndex: Int, text: String): List<NormRect> = withContext(Dispatchers.Default) {
@@ -381,36 +407,27 @@ class ReaderViewModel @Inject constructor(
             val pdfChar = chars[i]
             if (pdfChar.isSpace || pdfChar.text.isBlank()) continue
 
-            // FIX: Robust matching for ligatures/clusters (e.g. "fi" vs "f")
-            // Iterate through characters inside the PdfChar string
             var charInternalIndex = 0
             var matchedSoFar = 0
 
-            // Check if this PdfChar matches the *current* expectation in target
             while (charInternalIndex < pdfChar.text.length && matchIndex < cleanTarget.length) {
                 if (pdfChar.text[charInternalIndex].equals(cleanTarget[matchIndex], ignoreCase = true)) {
-                    // Match found for this char!
                     if (matchIndex == 0) startCharIndex = i
                     matchIndex++
                     charInternalIndex++
                     matchedSoFar++
                 } else {
-                    // Mismatch within this PdfChar
                     break
                 }
             }
 
             if (matchedSoFar == pdfChar.text.length) {
-                // We consumed the whole PdfChar successfully
                 if (matchIndex == cleanTarget.length) {
                     val matchedChars = chars.slice(startCharIndex..i)
                     return@withContext mergeCharsToLineRects(matchedChars)
                 }
             } else {
-                // Partial match failed or mismatch
                 if (matchIndex > 0) {
-                    // Reset and try to restart match from current index?
-                    // Simple reset logic:
                     matchIndex = 0
                     startCharIndex = -1
                 }
@@ -419,12 +436,6 @@ class ReaderViewModel @Inject constructor(
         emptyList()
     }
 
-    // Allows NoteItem to lazy-load rects if they were somehow missing (fallback),
-    // otherwise returns the stored list.
-    suspend fun getRectsForNote(note: NoteEntity): List<NormRect> {
-        if (note.rects.isNotEmpty()) return note.rects
-        return findRectsForText(note.pageIndex, note.originalText)
-    }
 
     // ----------------------------------------------------------------------
     // GESTURE & SELECTION LOGIC
@@ -435,23 +446,18 @@ class ReaderViewModel @Inject constructor(
             val chars = getPageChars(pageIndex)
             val normPoint = Offset(touchPoint.x / viewSize.width, touchPoint.y / viewSize.height)
 
-            // Find char under finger
             val hitIndex = chars.indexOfFirst { !it.isSpace && containsPoint(it.bounds, normPoint) }
 
             if (hitIndex != -1) {
-                // Intelligent Word Selection (Expand to word boundaries)
                 val hitY = chars[hitIndex].bounds.top
                 var start = hitIndex
                 var end = hitIndex
 
-                // Expand Left
                 while (start > 0) {
                     val prev = chars[start - 1]
-                    // Stop at space or line break (Y diff > 2%)
                     if (prev.isSpace || abs(prev.bounds.top - hitY) > 0.02f) break
                     start--
                 }
-                // Expand Right
                 while (end < chars.lastIndex) {
                     val next = chars[end + 1]
                     if (next.isSpace || abs(next.bounds.top - hitY) > 0.02f) break
@@ -472,14 +478,12 @@ class ReaderViewModel @Inject constructor(
             val chars = getPageChars(current.pageIndex)
             val normPoint = Offset(dragPoint.x / viewSize.width, dragPoint.y / viewSize.height)
 
-            // Find closest non-space character to the drag point
             val targetIndex = chars.indices
                 .filter { !chars[it].isSpace }
                 .minByOrNull { index ->
                     val rect = chars[index].bounds
                     val cx = (rect.left + rect.right) / 2
                     val cy = (rect.top + rect.bottom) / 2
-                    // Euclidean distance squared is sufficient for sorting
                     (cx - normPoint.x) * (cx - normPoint.x) + (cy - normPoint.y) * (cy - normPoint.y)
                 } ?: return@launch
 
@@ -527,7 +531,6 @@ class ReaderViewModel @Inject constructor(
         val rects = selection.rects
         if (rects.isEmpty()) return DragHandle.NONE
 
-        // Hit detection threshold (approx 8% of screen dimension)
         val threshold = 0.08f
 
         if (distance(normPoint, rects.first().left, rects.first().bottom) < threshold) return DragHandle.START
@@ -545,9 +548,7 @@ class ReaderViewModel @Inject constructor(
         _textSelection.value = TextSelectionState(page, text, range)
     }
 
-    fun clearSelection() { _selectionState.value = null }
     fun onDragEnd() { setDraggingHandle(DragHandle.NONE) }
-    fun onDragStart(pageIndex: Int, startPoint: Offset, viewSize: Size) { /* Logic handled in UI via checkHandleHitUI for better response */ }
 
 
     // ----------------------------------------------------------------------
@@ -562,7 +563,6 @@ class ReaderViewModel @Inject constructor(
                 var start = note.textRangeStart
                 var end = note.textRangeEnd
 
-                // Fallback for older notes or notes made in Image mode
                 if (start == null || end == null) {
                     val bounds = findFuzzyBounds(rawText, note.originalText)
                     if (bounds != null) {
@@ -572,8 +572,8 @@ class ReaderViewModel @Inject constructor(
                 }
 
                 if (start != null && end != null) {
-                    val safeStart = start!!.coerceIn(0, textLength)
-                    val safeEnd = end!!.coerceIn(0, textLength)
+                    val safeStart = start.coerceIn(0, textLength)
+                    val safeEnd = end.coerceIn(0, textLength)
                     if (safeStart < safeEnd) {
                         addStyle(SpanStyle(background = Color(0x66FFEB3B)), safeStart, safeEnd)
                     }
@@ -589,7 +589,6 @@ class ReaderViewModel @Inject constructor(
         val cleanTarget = target.replace(WHITESPACE_REGEX, "")
         if (cleanTarget.isEmpty()) return null
 
-        var containerCleanIndex = 0
         var matchCount = 0
         var startIndex = -1
 
@@ -660,7 +659,6 @@ class ReaderViewModel @Inject constructor(
     }
 
     private fun containsPoint(rect: NormRect, point: Offset): Boolean {
-        // 1% padding for easier touch
         val pad = 0.01f
         return point.x >= (rect.left - pad) && point.x <= (rect.right + pad) &&
                 point.y >= (rect.top - pad) && point.y <= (rect.bottom + pad)
