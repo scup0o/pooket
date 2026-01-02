@@ -1,4 +1,4 @@
-package com.project.pooket.ui.features.library
+package com.project.pooket.ui.library
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -47,7 +47,7 @@ fun LibraryMainScreen(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri -> viewModel.onFolderSelected(uri) }
 
-    val onBookClick: (String) -> Unit = remember { { uri -> viewModel.onBookPressed(uri) } }
+    val onBookClick: (String, String) -> Unit = remember { { uri, title -> viewModel.onBookPressed(uri,title) } }
 
     Scaffold(
         topBar = {
@@ -83,7 +83,7 @@ fun LibraryMainScreen(
                         item(span = { GridItemSpan(maxLineSpan) }) {
                             ContinueReadingCard(
                                 book = recentBook!!,
-                                onClick = { onBookClick(recentBook!!.uri) }
+                                onClick = { onBookClick(recentBook!!.uri, recentBook!!.title) }
                             )
                         }
 
@@ -99,7 +99,7 @@ fun LibraryMainScreen(
                     items(items = books, key = { it.uri }) { book ->
                         BookItem(
                             book = book,
-                            onClick = { onBookClick(book.uri) }
+                            onClick = { onBookClick(book.uri, book.title) }
                         )
                     }
                 }

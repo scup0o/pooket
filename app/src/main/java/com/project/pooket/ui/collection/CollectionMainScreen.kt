@@ -1,4 +1,4 @@
-package com.project.pooket.ui.features.collection
+package com.project.pooket.ui.collection
 
 import android.annotation.SuppressLint
 import androidx.compose.material3.ExperimentalMaterial3Api

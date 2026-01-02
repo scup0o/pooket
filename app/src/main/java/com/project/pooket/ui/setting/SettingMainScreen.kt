@@ -1,4 +1,4 @@
-package com.project.pooket.ui.features.setting
+package com.project.pooket.ui.setting
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically

@@ -1,4 +1,4 @@
-package com.project.pooket.ui.features.search
+package com.project.pooket.ui.search
 
 import android.annotation.SuppressLint
 import androidx.compose.material3.ExperimentalMaterial3Api

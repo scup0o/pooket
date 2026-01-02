@@ -1,4 +1,4 @@
-package com.project.pooket.ui.features.reader
+package com.project.pooket.ui.reader
 
 import android.app.Application
 import android.graphics.Bitmap

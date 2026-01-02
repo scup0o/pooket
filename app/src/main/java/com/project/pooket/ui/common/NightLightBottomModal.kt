@@ -1,9 +1,11 @@
-package com.project.pooket.ui.composable.common
+package com.project.pooket.ui.common
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
@@ -19,13 +21,15 @@ fun NightLightBottomModal(onDismiss: () -> Unit, content: @Composable ColumnScop
     val nightLightConfig = LocalNightLightConfig.current
 
     ModalBottomSheet(
+
         onDismissRequest = onDismiss,
         dragHandle = null,
+        contentWindowInsets = { WindowInsets(0, 0, 0, 0) }
     ){
         Box(
             modifier = Modifier.fillMaxWidth()
         ){
-            Column(Modifier.fillMaxWidth()) {
+            Column(Modifier.fillMaxWidth().windowInsetsPadding(BottomSheetDefaults.windowInsets)) {
                 BottomSheetDefaults.DragHandle(
                     modifier = Modifier.align(Alignment.CenterHorizontally)
                 )

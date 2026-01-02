@@ -1,4 +1,4 @@
-package com.project.pooket.ui.features.library
+package com.project.pooket.ui.library
 
 import android.net.Uri
 import androidx.lifecycle.ViewModel
@@ -40,8 +40,8 @@ class LibraryMainViewModel @Inject constructor(
             viewModelScope.launch { bookRepository.scanDirectory(uri) }
         }
     }
-    fun onBookPressed(uri: String){
-        val route = AppRoute.Reader.createRoute(uri)
+    fun onBookPressed(uri: String, title: String){
+        val route = AppRoute.Reader.createRoute(uri, title)
         navManager.navigate(route)
     }
 }
