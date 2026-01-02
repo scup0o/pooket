@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.project.pooket.core.GlobalViewModel
@@ -15,6 +16,8 @@ import com.project.pooket.core.theme.AppThemeConfig
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import com.project.pooket.core.nightlight.LocalNightLightConfig
+import com.project.pooket.core.nightlight.NightLightOverlay
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -27,15 +30,24 @@ class MainActivity : ComponentActivity() {
         setContent {
             val globalViewModel: GlobalViewModel = hiltViewModel()
             val currentTheme by globalViewModel.appTheme.collectAsStateWithLifecycle()
+            val nightLightConfig by globalViewModel.nightLightState.collectAsStateWithLifecycle()
             val useDarkTheme = when (currentTheme){
                 AppThemeConfig.DARK -> true
                 AppThemeConfig.LIGHT -> false
                 AppThemeConfig.FOLLOW_SYSTEM -> isSystemInDarkTheme()
             }
+            CompositionLocalProvider(LocalNightLightConfig provides nightLightConfig ) {
+                AppTheme(darkTheme = useDarkTheme) {
+                    AppRouting(navManager, viewModel = globalViewModel, isDarkTheme = useDarkTheme)
 
-            AppTheme(darkTheme = useDarkTheme) {
-                AppRouting(navManager, viewModel = globalViewModel, isDarkTheme = useDarkTheme)
+                    NightLightOverlay(
+                        isEnabled = nightLightConfig.isEnabled,
+                        warmth = nightLightConfig.warmth,
+                        dimming = nightLightConfig.dimming
+                    )
+                }
             }
+
         }
     }
 }

@@ -22,13 +22,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.project.pooket.core.navigation.FloatingMenuButton
+import com.project.pooket.core.nightlight.LocalNightLightConfig
 import com.project.pooket.core.theme.AppThemeConfig
 import com.project.pooket.data.local.setting.DisplaySettingsRepository
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingMainScreen(
-    nightLightConfig: DisplaySettingsRepository.NightLightConfig,
     isDarkTheme: Boolean,
     onThemeChange: (AppThemeConfig) -> Unit,
     onToggleNightLight: () -> Unit,
@@ -36,6 +36,7 @@ fun SettingMainScreen(
     onDimmingChange: (Float) -> Unit,
     onOpenDrawer: () -> Unit,
 ) {
+    val nightLightConfig = LocalNightLightConfig.current
     Scaffold(
         topBar = { TopAppBar(title = { Text("Setting") }) }
     ) { innerPadding ->

@@ -55,7 +55,7 @@ fun AppRouting(
         }
     }
 
-    val nightLightConfig by viewModel.nightLightState.collectAsStateWithLifecycle()
+//    val nightLightConfig by viewModel.nightLightState.collectAsStateWithLifecycle()
 //    val appTheme by viewModel.appTheme.collectAsStateWithLifecycle()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
@@ -89,7 +89,6 @@ fun AppRouting(
                 }
                 composable(AppRoute.Setting.route) {
                     SettingMainScreen(
-                        nightLightConfig = nightLightConfig,
                         isDarkTheme = isDarkTheme,
                         onThemeChange = {viewModel.setTheme(it)},
                         onToggleNightLight = {viewModel.toggleNightLight()},
@@ -114,9 +113,4 @@ fun AppRouting(
             }
         }
     }
-    NightLightOverlay(
-        isEnabled = nightLightConfig.isEnabled,
-        warmth = nightLightConfig.warmth,
-        dimming = nightLightConfig.dimming
-    )
 }

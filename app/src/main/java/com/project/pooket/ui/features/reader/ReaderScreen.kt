@@ -56,6 +56,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.project.pooket.data.local.note.NormRect
 import com.project.pooket.data.local.note.NoteEntity
+import com.project.pooket.ui.composable.common.NightLightBottomModal
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -844,7 +845,7 @@ fun NoteInputDialog(initialText: String = "", onDismiss: () -> Unit, onConfirm: 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NotesListSheet(notes: List<NoteEntity>, onNoteClick: (NoteEntity) -> Unit, onDismiss: () -> Unit) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    NightLightBottomModal(onDismiss = onDismiss) {
         Text("My Notes", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(16.dp).align(Alignment.CenterHorizontally))
         LazyColumn(modifier = Modifier.fillMaxHeight(0.6f)) {
             items(notes.sortedBy { it.pageIndex }) { note ->
