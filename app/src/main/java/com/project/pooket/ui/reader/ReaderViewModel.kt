@@ -70,6 +70,7 @@ class ReaderViewModel @Inject constructor(
     val fontSize = _fontSize.asStateFlow()
     private val _initialPage = MutableStateFlow(0)
     val initialPage = _initialPage.asStateFlow()
+    private var localIsCompleted = false
 
     // note state
     private val _notes = MutableStateFlow<List<NoteEntity>>(emptyList())
@@ -208,6 +209,7 @@ class ReaderViewModel @Inject constructor(
             try {
                 val book = repository.getBook(uriString)
                 _initialPage.value = book?.lastPage ?: 0
+                localIsCompleted = book?.isCompleted == true
 
                 val uri = uriString.toUri()
                 val fd = app.contentResolver.openFileDescriptor(uri, "r")
@@ -302,9 +304,26 @@ class ReaderViewModel @Inject constructor(
         clearAllSelection()
         val uri = currentBookUri ?: return
         saveJob?.cancel()
+
         saveJob = viewModelScope.launch {
             delay(1000)
+
             repository.saveProgress(uri, pageIndex)
+            val total = _pageCount.value
+            if (total > 0) {
+                val shouldBeCompleted = (pageIndex >= total - 1)
+                if (localIsCompleted != shouldBeCompleted) {
+                    localIsCompleted = shouldBeCompleted
+                    repository.setCompletedState(shouldBeCompleted, uri)
+                    Log.i("ReaderVM", "Book completion changed to: $shouldBeCompleted")
+                }
+            }
+        }
+    }
+
+    fun setCompletedState(isCompleted : Boolean){
+        viewModelScope.launch {
+            repository.setCompletedState(isCompleted, currentBookUri!!)
         }
     }
 

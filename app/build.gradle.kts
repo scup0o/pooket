@@ -21,9 +21,9 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // prevents including x86 files in the final APK
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
-        }
+//        ndk {
+//            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+//        }
     }
 
     buildTypes {

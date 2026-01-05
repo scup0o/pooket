@@ -7,7 +7,9 @@ import com.project.pooket.core.navigation.AppRoute
 import com.project.pooket.core.navigation.NavigationManager
 import com.project.pooket.data.local.book.BookLocalRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -29,9 +31,27 @@ class LibraryMainViewModel @Inject constructor(
         null
     )
 
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing = _isRefreshing.asStateFlow()
+
     init {
         viewModelScope.launch {
             if (books.value.isEmpty()) bookRepository.refreshAllLibrary()
+        }
+    }
+
+    fun onRefresh(){
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            try {
+                viewModelScope.launch {
+                    bookRepository.refreshAllLibrary()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                _isRefreshing.value = false
+            }
         }
     }
 

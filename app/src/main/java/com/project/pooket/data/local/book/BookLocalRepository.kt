@@ -130,6 +130,10 @@ class BookLocalRepository @Inject constructor(
         bookDao.updateProgress(bookUri, page, currentTime)
     }
 
+    suspend fun setCompletedState(completedState: Boolean, bookUri: String){
+        bookDao.setCompleteState(isCompleted = completedState, bookUri)
+    }
+
     suspend fun initTotalPages(bookUri: String, totalPages: Int) {
         bookDao.initTotalPages(bookUri, totalPages)
     }

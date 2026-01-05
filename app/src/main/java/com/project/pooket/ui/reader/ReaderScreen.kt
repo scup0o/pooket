@@ -1,5 +1,6 @@
 package com.project.pooket.ui.reader
 
+import android.util.Log
 import androidx.compose.animation.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.*
@@ -115,7 +116,29 @@ fun ReaderScreen(
         }
     }
     val activeUiPage = remember(isVerticalMode) {
-        derivedStateOf { if (isVerticalMode) listState.firstVisibleItemIndex else pagerState.currentPage }
+        derivedStateOf {
+            if (isVerticalMode) {
+                val layoutInfo = listState.layoutInfo
+                val visibleItems = layoutInfo.visibleItemsInfo
+
+                if (visibleItems.isEmpty()) return@derivedStateOf 0
+
+                val viewportCenter = (layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset) / 2
+
+                val centerItem = visibleItems.minByOrNull { item ->
+                    val itemCenter = item.offset + (item.size / 2)
+                    kotlin.math.abs(itemCenter - viewportCenter)
+                }
+
+                if (!listState.canScrollForward) {
+                    return@derivedStateOf (layoutInfo.totalItemsCount - 1)
+                }
+
+                return@derivedStateOf centerItem?.index ?: 0
+            } else {
+                pagerState.currentPage
+            }
+        }
     }
     LaunchedEffect(activeUiPage.value) {
         if (isInitialized && !isSwitchingModes) {
