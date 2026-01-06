@@ -19,9 +19,9 @@ import javax.inject.Inject
 
 @HiltViewModel
 class LibraryMainViewModel @Inject constructor(
-    private val navManager : NavigationManager,
+    private val navManager: NavigationManager,
     private val bookRepository: BookLocalRepository
-) : ViewModel(){
+) : ViewModel() {
 
     val books = bookRepository.allBooks.stateIn(
         viewModelScope,
@@ -37,9 +37,22 @@ class LibraryMainViewModel @Inject constructor(
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing = _isRefreshing.asStateFlow()
 
+    private val _isLoading = MutableStateFlow(true)
+    val isLoading = _isLoading.asStateFlow()
+
+    private val _isGridMode = MutableStateFlow(true)
+    val isGridMode = _isGridMode.asStateFlow()
+
     init {
         viewModelScope.launch {
-            if (books.value.isEmpty()) bookRepository.refreshAllLibrary()
+            try {
+                if (books.value.isEmpty()) {
+                    bookRepository.refreshAllLibrary()
+                }
+            } catch (_: Exception) {
+            } finally {
+                _isLoading.value = false
+            }
         }
     }
 
@@ -63,8 +76,13 @@ class LibraryMainViewModel @Inject constructor(
             viewModelScope.launch { bookRepository.scanDirectory(uri) }
         }
     }
-    fun onBookPressed(uri: String, title: String){
+
+    fun onBookPressed(uri: String, title: String) {
         val route = AppRoute.Reader.createRoute(uri, title)
         navManager.navigate(route)
+    }
+
+    fun onChangeViewMode(){
+        _isGridMode.value = !_isGridMode.value
     }
 }

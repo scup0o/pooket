@@ -16,7 +16,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -26,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -35,7 +35,8 @@ import java.io.File
 
 
 @Composable
-fun BookItem(book: BookEntity, onClick: () -> Unit) {
+fun BookListItem(book: BookEntity, onClick: () -> Unit) {
+
     Column(
         modifier = Modifier.width(110.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -98,45 +99,10 @@ fun BookItem(book: BookEntity, onClick: () -> Unit) {
             style = MaterialTheme.typography.labelSmall,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
             modifier = Modifier
                 .padding(top = 4.dp, start = 2.dp, end = 2.dp)
                 .fillMaxWidth()
         )
-    }
-}
-
-
-@Composable
-fun BookCover(coverPath: String?, title: String, modifier: Modifier = Modifier, width: Int=250, height: Int=350) {
-    val context = LocalContext.current
-    val imageRequest = remember(coverPath, width, height) {
-        if (coverPath != null) {
-            ImageRequest.Builder(context)
-                .data(File(coverPath))
-                .crossfade(true)
-                .size(width, height)
-                .build()
-        } else {
-            null
-        }
-    }
-
-    if (imageRequest != null) {
-        AsyncImage(
-            model = imageRequest,
-            contentDescription = title,
-            contentScale = ContentScale.Crop,
-            modifier = modifier
-        )
-    } else {
-        Box(
-            modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = title.take(1).uppercase(),
-                style = MaterialTheme.typography.headlineMedium
-            )
-        }
     }
 }

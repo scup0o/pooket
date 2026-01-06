@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 
@@ -45,7 +46,7 @@ fun AppDrawer(
                 AppRoute.drawerRoutes.forEach { item ->
                     val isSelected = currentRoute == item.route
                     DrawerIconItem(
-                        iconRes = if (isSelected) item.iconSelected!! else item.iconUnSelected!!,
+                        icon = if (isSelected) item.iconSelected!! else item.iconUnSelected!!,
                         isSelected = isSelected,
                         onClick = {
                             onNavigate(item.route)
@@ -59,7 +60,7 @@ fun AppDrawer(
 }
 @Composable
 private fun DrawerIconItem(
-    iconRes: Int,
+    icon: ImageVector,
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
@@ -74,7 +75,7 @@ private fun DrawerIconItem(
             ),
     ) {
         Icon(
-            painter = painterResource(id = iconRes),
+            icon,
             contentDescription = null,
             tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
             modifier = Modifier.size(24.dp)
