@@ -7,12 +7,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -58,15 +60,24 @@ fun BookItem(book: BookEntity, onClick: () -> Unit) {
                         (book.lastPage.toFloat() / (book.totalPages - 1))
                     }
                     if (progress > 0f) {
-                        LinearProgressIndicator(
+                        CircularProgressIndicator(
                             progress = { progress },
                             modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .fillMaxWidth()
-                                .height(4.dp),
-                            trackColor = Color.Transparent,
-                            color = MaterialTheme.colorScheme.secondary
+                                .align(Alignment.BottomEnd)
+                                .padding(4.dp)
+                                .size(20.dp),
+                            color = MaterialTheme.colorScheme.inversePrimary,
+                            trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
                         )
+//                        LinearProgressIndicator(
+//                            progress = { progress },
+//                            modifier = Modifier
+//                                .align(Alignment.BottomCenter)
+//                                .fillMaxWidth()
+//                                .height(4.dp),
+//                            trackColor = Color.Transparent,
+//                            color = MaterialTheme.colorScheme.tertiary
+//                        )
                     }
                 }
 
@@ -96,14 +107,14 @@ fun BookItem(book: BookEntity, onClick: () -> Unit) {
 
 
 @Composable
-fun BookCover(coverPath: String?, title: String, modifier: Modifier = Modifier) {
+fun BookCover(coverPath: String?, title: String, modifier: Modifier = Modifier, width: Int=250, height: Int=350) {
     val context = LocalContext.current
-    val imageRequest = remember(coverPath) {
+    val imageRequest = remember(coverPath, width, height) {
         if (coverPath != null) {
             ImageRequest.Builder(context)
                 .data(File(coverPath))
                 .crossfade(true)
-                .size(250, 350)
+                .size(width, height)
                 .build()
         } else {
             null

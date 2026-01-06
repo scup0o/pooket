@@ -7,11 +7,14 @@ import com.project.pooket.core.navigation.AppRoute
 import com.project.pooket.core.navigation.NavigationManager
 import com.project.pooket.data.local.book.BookLocalRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 @HiltViewModel
@@ -40,18 +43,18 @@ class LibraryMainViewModel @Inject constructor(
         }
     }
 
-    fun onRefresh(){
+    fun onRefresh() {
         viewModelScope.launch {
             _isRefreshing.value = true
-            try {
-                viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                try {
+                    delay(500)
                     bookRepository.refreshAllLibrary()
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            } finally {
-                _isRefreshing.value = false
             }
+            _isRefreshing.value = false
         }
     }
 
