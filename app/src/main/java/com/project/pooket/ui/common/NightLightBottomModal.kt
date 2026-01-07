@@ -21,7 +21,6 @@ fun NightLightBottomModal(onDismiss: () -> Unit, content: @Composable ColumnScop
     val nightLightConfig = LocalNightLightConfig.current
 
     ModalBottomSheet(
-
         onDismissRequest = onDismiss,
         dragHandle = null,
         contentWindowInsets = { WindowInsets(0, 0, 0, 0) }
