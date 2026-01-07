@@ -42,4 +42,6 @@ interface BookDao {
 
     @Delete
     suspend fun deleteBooks(books: List<BookEntity>)
+    @Query("DELETE FROM books WHERE uri LIKE '%' || :folderUri || '%'")
+    suspend fun deleteBooksInFolder(folderUri: String)
 }

@@ -35,4 +35,11 @@ class LibraryPreferences @Inject constructor(
             prefs[Keys.SCANNED_FOLDERS] = current + uriString
         }
     }
+
+    suspend fun removeFolder(uriString: String){
+        dataStore.edit { prefs ->
+            val current = prefs[Keys.SCANNED_FOLDERS] ?:emptySet()
+            prefs[Keys.SCANNED_FOLDERS] = current - uriString
+        }
+    }
 }

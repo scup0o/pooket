@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
+import androidx.core.net.toUri
 import com.project.pooket.core.utils.BookCoverExtractor
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -15,7 +16,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
-import androidx.core.net.toUri
 
 @Singleton
 class BookLocalRepository @Inject constructor(
@@ -24,22 +24,32 @@ class BookLocalRepository @Inject constructor(
     private val coverExtractor: BookCoverExtractor,
     private val libraryPrefs: LibraryPreferences
 ) {
-
+    val scannedFolders: Flow<Set<String>> = libraryPrefs.scannedFolders
     val allBooks: Flow<List<BookEntity>> = bookDao.getAllBooks()
     val recentBook: Flow<BookEntity?> = bookDao.getRecentBook()
 
     suspend fun refreshAllLibrary() = withContext(Dispatchers.IO) {
         val folders = libraryPrefs.scannedFolders.first()
 
+        val allCurrentBooks = bookDao.getAllBooksOnce()
+
+        val orphanBooks = allCurrentBooks.filter { book ->
+            folders.none { folderUri -> book.uri.contains(folderUri) }
+        }
+
+        if (orphanBooks.isNotEmpty()) {
+            bookDao.deleteBooks(orphanBooks)
+        }
+
         folders.forEach { uriString ->
             try {
                 val uri = uriString.toUri()
                 val hasPermission = context.contentResolver.persistedUriPermissions.any {
-                    it.uri == uri && it.isReadPermission
+                    it.uri.toString() == uriString && it.isReadPermission
                 }
 
                 if (hasPermission) {
-                    performScan(uri)
+                    performScan(uri, allCurrentBooks)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -49,10 +59,16 @@ class BookLocalRepository @Inject constructor(
 
     suspend fun scanDirectory(treeUri: Uri) = withContext(Dispatchers.IO) {
         libraryPrefs.addFolder(treeUri.toString())
-        performScan(treeUri)
+        val currentBooks = bookDao.getAllBooksOnce()
+        performScan(treeUri, currentBooks)
     }
 
-    private suspend fun performScan(treeUri: Uri) {
+    suspend fun removeFolder(folderUri: String) = withContext(Dispatchers.IO) {
+        libraryPrefs.removeFolder(folderUri)
+        bookDao.deleteBooksInFolder(folderUri)
+    }
+
+    private suspend fun performScan(treeUri: Uri, existingBooks: List<BookEntity>) {
         val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         runCatching { context.contentResolver.takePersistableUriPermission(treeUri, takeFlags) }
 
@@ -66,8 +82,6 @@ class BookLocalRepository @Inject constructor(
             DocumentsContract.Document.COLUMN_MIME_TYPE,
             DocumentsContract.Document.COLUMN_SIZE
         )
-
-        val existingBooks = bookDao.getAllBooksOnce()
 
         context.contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
@@ -83,6 +97,7 @@ class BookLocalRepository @Inject constructor(
 
                 if (isPdf || isEpub) {
                     val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, cursor.getString(idCol))
+
                     scannedBooks.add(
                         BookEntity(
                             uri = fileUri.toString(),
@@ -97,7 +112,11 @@ class BookLocalRepository @Inject constructor(
         }
 
         val scannedUris = scannedBooks.map { it.uri }.toSet()
-        val toDelete = existingBooks.filter { it.uri.contains(treeUri.toString()) && it.uri !in scannedUris }
+
+        val toDelete = existingBooks.filter {
+            it.uri.contains(treeUri.toString()) && it.uri !in scannedUris
+        }
+
         if (toDelete.isNotEmpty()) {
             bookDao.deleteBooks(toDelete)
         }
@@ -105,10 +124,9 @@ class BookLocalRepository @Inject constructor(
         if (scannedBooks.isNotEmpty()) {
             bookDao.insertBooks(scannedBooks)
         }
-
         val booksNeedingCover = scannedBooks.filter { book ->
             val existing = existingBooks.find { it.uri == book.uri }
-            existing?.coverImagePath == null
+            existing == null || existing.coverImagePath == null
         }
 
         booksNeedingCover.chunked(3).forEach { chunk ->

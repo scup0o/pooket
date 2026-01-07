@@ -51,6 +51,7 @@ import com.project.pooket.ui.library.composable.BookGridItem
 import com.project.pooket.ui.library.composable.BookListItem
 import com.project.pooket.ui.library.composable.ContinueReadingCard
 import com.project.pooket.ui.library.composable.FilterSortSheet
+import com.project.pooket.ui.library.composable.FolderManagementDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,18 +59,22 @@ fun LibraryMainScreen(
     onOpenDrawer: () -> Unit,
     viewModel: LibraryMainViewModel = hiltViewModel()
 ) {
+    //data-state
     val books by viewModel.books.collectAsStateWithLifecycle()
     val recentBook by viewModel.recentBook.collectAsStateWithLifecycle()
+    val scannedFolders by viewModel.scannedFolders.collectAsStateWithLifecycle()
 
+    //ui-state
     val isRefresing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val isGridMode by viewModel.isGridMode.collectAsStateWithLifecycle()
     val sortOption by viewModel.sortOption.collectAsStateWithLifecycle()
     val activeFilters by viewModel.activeFilters.collectAsStateWithLifecycle()
+    var showFolderDialog by remember { mutableStateOf(false) }
+    var showFilterSheet by remember { mutableStateOf(false) }
 
+    //services & controller
     val gridState = rememberLazyGridState()
     val listState = rememberLazyListState()
-
-    var showFilterSheet by remember { mutableStateOf(false) }
 
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -113,7 +118,7 @@ fun LibraryMainScreen(
                             tint = MaterialTheme.colorScheme.primary
                         )
                     }
-                    IconButton(onClick = { launcher.launch(null) }) {
+                    IconButton(onClick = { showFolderDialog = true}) {
                         Icon(
                             Icons.Rounded.LibraryAdd,
                             "Add Folder",
@@ -210,6 +215,18 @@ fun LibraryMainScreen(
             )
         }
 
-
+        if (showFolderDialog) {
+            FolderManagementDialog(
+                folders = scannedFolders,
+                onDismiss = { showFolderDialog = false },
+                onAddFolder = {
+                    showFolderDialog = false
+                    launcher.launch(null)
+                },
+                onRemoveFolder = { uri ->
+                    viewModel.onRemoveFolder(uri)
+                }
+            )
+        }
     }
 }

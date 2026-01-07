@@ -38,13 +38,22 @@ class LibraryMainViewModel @Inject constructor(
     private val bookRepository: BookLocalRepository
 ) : ViewModel() {
 
-    private val _rawBooks = bookRepository.allBooks
+    //folder
+    val scannedFolders = bookRepository.scannedFolders.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        emptySet()
+    )
 
+    //sorting & filtering
     private val _sortOption = MutableStateFlow(BookSortOption.DATE_NEWEST)
     val sortOption = _sortOption.asStateFlow()
 
     private val _activeFilters = MutableStateFlow(emptySet<BookCompletedFilter>())
     val activeFilters = _activeFilters.asStateFlow()
+
+    //books-state
+    private val _rawBooks = bookRepository.allBooks
 
     val books = combine(_rawBooks, _sortOption, _activeFilters) { list, sort, filters ->
         val filteredList = if (filters.isEmpty()) {
@@ -71,14 +80,13 @@ class LibraryMainViewModel @Inject constructor(
         null
     )
 
+    //ui-state
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing = _isRefreshing.asStateFlow()
-//
-//    private val _isLoading = MutableStateFlow(true)
-//    val isLoading = _isLoading.asStateFlow()
 
     private val _isGridMode = MutableStateFlow(true)
     val isGridMode = _isGridMode.asStateFlow()
+
 
     init {
         viewModelScope.launch {
@@ -121,12 +129,6 @@ class LibraryMainViewModel @Inject constructor(
         }
     }
 
-    fun onFolderSelected(uri: Uri?) {
-        if (uri != null) {
-            viewModelScope.launch { bookRepository.scanDirectory(uri) }
-        }
-    }
-
     fun onBookPressed(uri: String, title: String) {
         val route = AppRoute.Reader.createRoute(uri, title)
         navManager.navigate(route)
@@ -139,5 +141,18 @@ class LibraryMainViewModel @Inject constructor(
     fun applySortAndFilters(newSort: BookSortOption, newFilters: Set<BookCompletedFilter>) {
         _sortOption.value = newSort
         _activeFilters.value = newFilters
+    }
+
+    //folder-action
+    fun onFolderSelected(uri: Uri?) {
+        if (uri != null) {
+            viewModelScope.launch { bookRepository.scanDirectory(uri) }
+        }
+    }
+
+    fun onRemoveFolder(uri: String){
+        viewModelScope.launch {
+            bookRepository.removeFolder(uri)
+        }
     }
 }
