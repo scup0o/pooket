@@ -12,10 +12,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -49,6 +52,14 @@ fun BookGridItem(book: BookEntity, onClick: () -> Unit) {
                 .fillMaxWidth(),
         ) {
             Box {
+                if (book.isFavorite==true)
+                    Icon(
+                         Icons.Rounded.Favorite,
+                        null,
+                        modifier = Modifier.align(Alignment.TopEnd),
+                        tint = Color.Red
+                    )
+
                 BookCover(
                     coverPath = book.coverImagePath,
                     title = book.title,

@@ -3,6 +3,7 @@ package com.project.pooket.ui.library.composable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -12,10 +13,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -49,60 +52,99 @@ fun BookListItem(book: BookEntity, onClick: () -> Unit) {
                 .height(160.dp)
                 .fillMaxWidth(),
         ) {
-            Box {
-                BookCover(
-                    coverPath = book.coverImagePath,
-                    title = book.title,
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                if (book.totalPages > 0) {
-                    val progress = remember(book.lastPage, book.totalPages) {
-                        (book.lastPage.toFloat() / (book.totalPages - 1))
-                    }
-                    if (progress > 0f) {
-                        CircularProgressIndicator(
-                            progress = { progress },
+            Row {
+                Box {
+                    BookCover(
+                        coverPath = book.coverImagePath,
+                        title = book.title,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    if (book.isCompleted == true) {
+                        Box(
                             modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(4.dp)
-                                .size(20.dp),
-                            color = MaterialTheme.colorScheme.inversePrimary,
-                            trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-                        )
-//                        LinearProgressIndicator(
-//                            progress = { progress },
-//                            modifier = Modifier
-//                                .align(Alignment.BottomCenter)
-//                                .fillMaxWidth()
-//                                .height(4.dp),
-//                            trackColor = Color.Transparent,
-//                            color = MaterialTheme.colorScheme.tertiary
-//                        )
+                                .fillMaxSize()
+                                .background(color = Color.LightGray.copy(alpha = 0.4f))
+                        ) {
+                            Icon(
+                                Icons.Default.Check,
+                                null,
+                                tint = Color.White,
+                                modifier = Modifier.align(Alignment.Center)
+                            )
+                        }
                     }
+
+                }
+                Row {
+                    Box() {
+                        Column {
+                            Text(
+                                text = book.title,
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                            )
+                            Text(
+                                text = book.author ?:"Unknown author",
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth(),
+                                color = MaterialTheme.colorScheme.outlineVariant
+                            )
+                            Text(
+                                text = book.description ?: "No description",
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth(),
+                                color = MaterialTheme.colorScheme.outlineVariant
+
+                            )
+                        }
+                        if (book.totalPages > 0) {
+                            val progress = remember(book.lastPage, book.totalPages) {
+                                (book.lastPage.toFloat() / (book.totalPages - 1))
+                            }
+                            if (progress > 0f) {
+                                LinearProgressIndicator(
+                                    progress = { progress },
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .fillMaxWidth()
+                                        .height(4.dp),
+                                    trackColor = Color.Transparent,
+                                    color = MaterialTheme.colorScheme.tertiary
+                                )
+                                Text(
+                                    "${progress.toInt()}%"
+                                )
+                            }
+                        }
+
+
+                    }
+                    if (book.isFavorite)
+                        Icon(
+                            Icons.Rounded.Favorite,
+                            null,
+                            tint = Color.Red
+                        )
                 }
 
-                if (book.isCompleted == true) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(color = Color.LightGray.copy(alpha = 0.4f))
-                    ) {
-                        Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.align(Alignment.Center))
-                    }
-                }
             }
+
+
+
         }
 
-        Text(
-            text = book.title,
-            style = MaterialTheme.typography.labelSmall,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-            modifier = Modifier
-                .padding(top = 4.dp, start = 2.dp, end = 2.dp)
-                .fillMaxWidth()
-        )
+
     }
 }

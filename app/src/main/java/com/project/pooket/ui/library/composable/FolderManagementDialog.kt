@@ -9,14 +9,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.core.net.toUri
 
 @Composable
 fun FolderManagementDialog(
@@ -25,12 +30,14 @@ fun FolderManagementDialog(
     onAddFolder: () -> Unit,
     onRemoveFolder: (String) -> Unit
 ) {
+    var folderToDelete by remember { mutableStateOf<String?>(null) }
+
     Dialog(onDismissRequest = onDismiss) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            shape = RoundedCornerShape(28.dp), // Standard Material3 Dialog Corner
+            shape = RoundedCornerShape(28.dp),
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
             )
@@ -38,7 +45,6 @@ fun FolderManagementDialog(
             Column(
                 modifier = Modifier.padding(24.dp)
             ) {
-                // Header
                 Text(
                     text = "Manage Folders",
                     style = MaterialTheme.typography.headlineSmall,
@@ -46,7 +52,6 @@ fun FolderManagementDialog(
                 )
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Folder List
                 if (folders.isEmpty()) {
                     Box(
                         modifier = Modifier
@@ -64,13 +69,13 @@ fun FolderManagementDialog(
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 240.dp), // Limit height so dialog fits on screen
+                            .heightIn(max = 240.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(folders.toList()) { uriString ->
                             FolderDialogItem(
                                 uriString = uriString,
-                                onRemove = { onRemoveFolder(uriString) }
+                                onRemove = { folderToDelete = uriString }
                             )
                         }
                     }
@@ -78,7 +83,6 @@ fun FolderManagementDialog(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                // Actions
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
@@ -99,15 +103,48 @@ fun FolderManagementDialog(
             }
         }
     }
+
+    if (folderToDelete != null) {
+        val readableName = remember(folderToDelete) {
+            try {
+                folderToDelete!!.toUri().path?.substringAfterLast(":") ?: "this folder"
+            } catch (e: Exception) { "this folder" }
+        }
+
+        AlertDialog(
+            onDismissRequest = { folderToDelete = null },
+            icon = { Icon(Icons.Default.Warning, contentDescription = null) },
+            title = { Text("Remove Folder?") },
+            text = {
+                Text("Are you sure you want to remove '$readableName'?\n\nAll books imported from this folder will be removed from your library.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        folderToDelete?.let { onRemoveFolder(it) }
+                        folderToDelete = null
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Remove")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { folderToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
 @Composable
 fun FolderDialogItem(uriString: String, onRemove: () -> Unit) {
-    // Parse the ugly URI to get a readable name
     val readableName = remember(uriString) {
         try {
-            val uri = Uri.parse(uriString)
-            // Decodes "primary:Download" to "Download"
+            val uri = uriString.toUri()
             val path = uri.path ?: uriString
             path.substringAfterLast(":")
         } catch (e: Exception) {
@@ -147,7 +184,7 @@ fun FolderDialogItem(uriString: String, onRemove: () -> Unit) {
                 Icon(
                     Icons.Default.Delete,
                     contentDescription = "Remove",
-                    tint = MaterialTheme.colorScheme.error,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp)
                 )
             }

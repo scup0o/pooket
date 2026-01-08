@@ -44,7 +44,6 @@ fun ContinueReadingCard(book: BookEntity, onClick: () -> Unit, modifier: Modifie
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
         modifier = modifier
             .fillMaxWidth()
-            .height(90.dp)
     ) {
         Box(){
             Row(Modifier.fillMaxSize()) {

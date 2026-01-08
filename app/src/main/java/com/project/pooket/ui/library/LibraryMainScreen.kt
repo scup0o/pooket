@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -20,12 +21,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.automirrored.rounded.Sort
+import androidx.compose.material.icons.automirrored.rounded.ViewList
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CatchingPokemon
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.LibraryAdd
 import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material.icons.rounded.LibraryAdd
+import androidx.compose.material.icons.rounded.SortByAlpha
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -65,6 +68,7 @@ fun LibraryMainScreen(
     val scannedFolders by viewModel.scannedFolders.collectAsStateWithLifecycle()
 
     //ui-state
+    val continueReadingCardHeight = 90.dp
     val isRefresing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val isGridMode by viewModel.isGridMode.collectAsStateWithLifecycle()
     val sortOption by viewModel.sortOption.collectAsStateWithLifecycle()
@@ -105,7 +109,7 @@ fun LibraryMainScreen(
                     IconButton(onClick = viewModel::onChangeViewMode) {
                         Icon(
                             if (isGridMode) Icons.Rounded.Dashboard
-                            else Icons.AutoMirrored.Filled.ViewList,
+                            else Icons.AutoMirrored.Rounded.ViewList,
                             null,
                             tint = MaterialTheme.colorScheme.primary
 
@@ -113,7 +117,7 @@ fun LibraryMainScreen(
                     }
                     IconButton(onClick = { showFilterSheet = true }) {
                         Icon(
-                            Icons.AutoMirrored.Rounded.Sort,
+                            Icons.Rounded.SortByAlpha,
                             null,
                             tint = MaterialTheme.colorScheme.primary
                         )
@@ -149,6 +153,12 @@ fun LibraryMainScreen(
 
 
             } else {
+                val bottomPadding = if (recentBook != null) {
+                    continueReadingCardHeight + 20.dp
+                } else {
+                    16.dp
+                }
+
                 if (isGridMode) {
                     LazyVerticalGrid(
                         state = gridState,
@@ -158,7 +168,7 @@ fun LibraryMainScreen(
                         contentPadding = PaddingValues(
                             start = 12.dp,
                             end = 12.dp,
-                            bottom = if (recentBook != null) 140.dp else 16.dp
+                            bottom = bottomPadding
                         ),
                         modifier = Modifier.fillMaxSize()
                     ) {
@@ -173,10 +183,14 @@ fun LibraryMainScreen(
                         }
                     }
                 } else {
-                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                        item {
-                            Text("ListMode")
-                        }
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = 12.dp,
+                            end = 12.dp,
+                            bottom = bottomPadding
+                        ),) {
                         items(
                             items = books,
                             key = { it.uri }
@@ -198,6 +212,7 @@ fun LibraryMainScreen(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .padding(horizontal = 20.dp, vertical = 5.dp)
+                            .height(continueReadingCardHeight)
                     )
                 }
             }
