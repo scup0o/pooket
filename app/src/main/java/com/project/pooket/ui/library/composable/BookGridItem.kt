@@ -30,6 +30,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -38,9 +39,9 @@ import java.io.File
 
 
 @Composable
-fun BookGridItem(book: BookEntity, onClick: () -> Unit) {
+fun BookGridItem(book: BookEntity, onClick: () -> Unit, height: Dp = 160.dp, width: Dp = 110.dp ) {
     Column(
-        modifier = Modifier.width(110.dp),
+        modifier = Modifier.width(width),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Card(
@@ -48,16 +49,19 @@ fun BookGridItem(book: BookEntity, onClick: () -> Unit) {
             shape = RoundedCornerShape(8.dp),
             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
             modifier = Modifier
-                .height(160.dp)
+                .height(height)
                 .fillMaxWidth(),
         ) {
             Box {
-                if (book.isFavorite==true)
+                if (book.isFavorite)
                     Icon(
-                         Icons.Rounded.Favorite,
+                        Icons.Rounded.Favorite,
                         null,
-                        modifier = Modifier.align(Alignment.TopEnd),
-                        tint = Color.Red
+                        tint = Color(0xB2B91621),
+                        modifier = Modifier
+                            .padding(5.dp)
+                            .size(20.dp)
+                            .align(Alignment.TopEnd)
                     )
 
                 BookCover(
@@ -92,7 +96,7 @@ fun BookGridItem(book: BookEntity, onClick: () -> Unit) {
                     }
                 }
 
-                if (book.isCompleted == true) {
+                if (book.isCompleted) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()

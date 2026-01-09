@@ -158,7 +158,6 @@ fun LibraryMainScreen(
                 } else {
                     16.dp
                 }
-
                 if (isGridMode) {
                     LazyVerticalGrid(
                         state = gridState,
@@ -186,6 +185,7 @@ fun LibraryMainScreen(
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
                         contentPadding = PaddingValues(
                             start = 12.dp,
                             end = 12.dp,
