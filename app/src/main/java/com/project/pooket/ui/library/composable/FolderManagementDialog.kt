@@ -45,13 +45,6 @@ fun FolderManagementDialog(
             Column(
                 modifier = Modifier.padding(24.dp)
             ) {
-                Text(
-                    text = "Manage Folders",
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-
                 if (folders.isEmpty()) {
                     Box(
                         modifier = Modifier
@@ -87,9 +80,6 @@ fun FolderManagementDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
                 ) {
-                    TextButton(onClick = onDismiss) {
-                        Text("Close")
-                    }
                     Button(onClick = onAddFolder) {
                         Icon(
                             Icons.Default.Add,

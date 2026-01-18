@@ -156,7 +156,7 @@ fun LibraryMainScreen(
                 val bottomPadding = if (recentBook != null) {
                     continueReadingCardHeight + 20.dp
                 } else {
-                    16.dp
+                    0.dp
                 }
                 if (isGridMode) {
                     LazyVerticalGrid(
@@ -205,7 +205,7 @@ fun LibraryMainScreen(
             }
 
             recentBook?.let {
-                if (it.isCompleted == false) {
+                if (!it.isCompleted) {
                     ContinueReadingCard(
                         book = recentBook!!,
                         onClick = { onBookClick(recentBook!!.uri, recentBook!!.title) },

@@ -46,7 +46,7 @@ import java.io.File
 
 
 @Composable
-fun BookListItem(book: BookEntity, onClick: () -> Unit, height: Dp = 130.dp, width: Dp = 130.dp ) {
+fun BookListItem(book: BookEntity, onClick: () -> Unit, height: Dp = 130.dp, width: Dp = 130.dp) {
     Row(
         modifier = Modifier
             .clickable(onClick = onClick)
@@ -66,7 +66,9 @@ fun BookListItem(book: BookEntity, onClick: () -> Unit, height: Dp = 130.dp, wid
         horizontalArrangement = Arrangement.spacedBy(15.dp)
     ) {
 
-        Box(modifier = Modifier.weight(1f).height(height)) {
+        Box(modifier = Modifier
+            .weight(1f)
+            .height(height)) {
             Column() {
                 Text(
                     text = book.author ?: "Unknown author",
@@ -79,7 +81,7 @@ fun BookListItem(book: BookEntity, onClick: () -> Unit, height: Dp = 130.dp, wid
                 )
                 Text(
                     text = book.title,
-                    style = MaterialTheme.typography.titleSmall,
+                    style = MaterialTheme.typography.titleMedium,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
@@ -102,15 +104,28 @@ fun BookListItem(book: BookEntity, onClick: () -> Unit, height: Dp = 130.dp, wid
                     (book.lastPage.toFloat() / (book.totalPages - 1))
                 }
                 if (progress > 0f) {
-                    LinearProgressIndicator(
-                        progress = { progress },
+                    Row(
                         modifier = Modifier
-                            .align(Alignment.BottomCenter)
                             .fillMaxWidth()
-                            .height(4.dp),
-                        trackColor = Color.Transparent,
-                        color = MaterialTheme.colorScheme.tertiary
-                    )
+                            .align(Alignment.BottomCenter),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier
+                                .height(5.dp)
+                                .weight(1f),
+                            trackColor = MaterialTheme.colorScheme.outlineVariant,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                        Text(
+                            "${(progress * 100).toInt()}%",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+
                 }
             }
 
@@ -118,15 +133,15 @@ fun BookListItem(book: BookEntity, onClick: () -> Unit, height: Dp = 130.dp, wid
         }
         Box(
             modifier = Modifier
-                .width(width)
                 .height(height)
-                .clip(shape = RoundedCornerShape(10))
+                .width(width)
+                .clip(shape = RoundedCornerShape(10)),
+            contentAlignment = Alignment.Center
         ) {
             BookCover(
                 coverPath = book.coverImagePath,
                 title = book.title,
                 modifier = Modifier
-                    .width(width)
                     .height(height)
             )
             if (book.isCompleted) {
@@ -143,11 +158,11 @@ fun BookListItem(book: BookEntity, onClick: () -> Unit, height: Dp = 130.dp, wid
                     )
                 }
             }
-            if (book.isFavorite)
+            if (!book.isFavorite)
                 Icon(
                     Icons.Rounded.Favorite,
                     null,
-                    tint = Color(0xB2B91621),
+                    tint = Color(0xDFB91621),
                     modifier = Modifier
                         .padding(5.dp)
                         .size(20.dp)

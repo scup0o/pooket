@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -53,17 +54,6 @@ fun BookGridItem(book: BookEntity, onClick: () -> Unit, height: Dp = 160.dp, wid
                 .fillMaxWidth(),
         ) {
             Box {
-                if (book.isFavorite)
-                    Icon(
-                        Icons.Rounded.Favorite,
-                        null,
-                        tint = Color(0xB2B91621),
-                        modifier = Modifier
-                            .padding(5.dp)
-                            .size(20.dp)
-                            .align(Alignment.TopEnd)
-                    )
-
                 BookCover(
                     coverPath = book.coverImagePath,
                     title = book.title,
@@ -105,12 +95,23 @@ fun BookGridItem(book: BookEntity, onClick: () -> Unit, height: Dp = 160.dp, wid
                         Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.align(Alignment.Center))
                     }
                 }
+
+                if (!book.isFavorite)
+                    Icon(
+                        Icons.Rounded.Favorite,
+                        null,
+                        tint = Color(0xDFB91621),
+                        modifier = Modifier
+                            .padding(5.dp)
+                            .size(20.dp)
+                            .align(Alignment.TopEnd)
+                    )
             }
         }
 
         Text(
             text = book.title,
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.titleSmall,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
