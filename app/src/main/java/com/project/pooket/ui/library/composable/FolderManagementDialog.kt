@@ -49,7 +49,7 @@ fun FolderManagementDialog(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "No folders added yet.",
+                    text = "No folders added yet",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
