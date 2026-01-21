@@ -98,7 +98,7 @@ fun FolderManagementDialog(
         NightLightDialog(onDismissRequest = { folderToDelete = null }) {
             Text(
                 "Remove folder '$readableName'?",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                 modifier = Modifier.padding(10.dp)
             )
             Text("All books imported from this folder will be removed from your library", textAlign = TextAlign.Center)

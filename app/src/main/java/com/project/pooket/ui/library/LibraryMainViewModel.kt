@@ -23,9 +23,12 @@ enum class BookSortOption(val label: String) {
     NAME_ASC("Name: A-Z"),
     NAME_DESC("Name: Z-A"),
     DATE_NEWEST("Recently Added"),
-    DATE_OLDEST("Oldest Added")
-}
+    DATE_OLDEST("Oldest Added");
 
+    companion object {
+        val DEFAULT = DATE_NEWEST
+    }
+}
 enum class BookCompletedFilter(val label: String) {
     IN_PROGRESS("In Progress"),
     COMPLETED("Completed"),
@@ -46,7 +49,7 @@ class LibraryMainViewModel @Inject constructor(
     )
 
     //sorting & filtering
-    private val _sortOption = MutableStateFlow(BookSortOption.DATE_NEWEST)
+    private val _sortOption = MutableStateFlow(BookSortOption.DEFAULT)
     val sortOption = _sortOption.asStateFlow()
 
     private val _activeFilters = MutableStateFlow(emptySet<BookCompletedFilter>())
