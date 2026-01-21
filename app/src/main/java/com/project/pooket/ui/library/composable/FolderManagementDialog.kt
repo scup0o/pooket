@@ -2,13 +2,18 @@ package com.project.pooket.ui.library.composable
 
 import android.net.Uri
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesomeMotion
+import androidx.compose.material.icons.filled.BubbleChart
+import androidx.compose.material.icons.filled.Coronavirus
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -18,10 +23,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.core.net.toUri
+import com.project.pooket.ui.common.NightLightDialog
 
 @Composable
 fun FolderManagementDialog(
@@ -32,64 +40,48 @@ fun FolderManagementDialog(
 ) {
     var folderToDelete by remember { mutableStateOf<String?>(null) }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            shape = RoundedCornerShape(28.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-            )
-        ) {
-            Column(
-                modifier = Modifier.padding(24.dp)
+    NightLightDialog(onDismissRequest = onDismiss) {
+        if (folders.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 24.dp),
+                contentAlignment = Alignment.Center
             ) {
-                if (folders.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 24.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "No folders added yet.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 240.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(folders.toList()) { uriString ->
-                            FolderDialogItem(
-                                uriString = uriString,
-                                onRemove = { folderToDelete = uriString }
-                            )
-                        }
-                    }
+                Text(
+                    text = "No folders added yet.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 240.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(folders.toList()) { uriString ->
+                    FolderDialogItem(
+                        uriString = uriString,
+                        onRemove = { folderToDelete = uriString }
+                    )
                 }
+            }
+        }
 
-                Spacer(modifier = Modifier.height(24.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
-                ) {
-                    Button(onClick = onAddFolder) {
-                        Icon(
-                            Icons.Default.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("Add Folder")
-                    }
-                }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.Start)
+        ) {
+            TextButton(onClick = onAddFolder) {
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Add folder")
             }
         }
     }
@@ -98,17 +90,19 @@ fun FolderManagementDialog(
         val readableName = remember(folderToDelete) {
             try {
                 folderToDelete!!.toUri().path?.substringAfterLast(":") ?: "this folder"
-            } catch (e: Exception) { "this folder" }
+            } catch (e: Exception) {
+                "this folder"
+            }
         }
 
-        AlertDialog(
-            onDismissRequest = { folderToDelete = null },
-            icon = { Icon(Icons.Default.Warning, contentDescription = null) },
-            title = { Text("Remove Folder?") },
-            text = {
-                Text("Are you sure you want to remove '$readableName'?\n\nAll books imported from this folder will be removed from your library.")
-            },
-            confirmButton = {
+        NightLightDialog(onDismissRequest = { folderToDelete = null }) {
+            Text(
+                "Remove folder '$readableName'?",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                modifier = Modifier.padding(10.dp)
+            )
+            Text("All books imported from this folder will be removed from your library", textAlign = TextAlign.Center)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(
                     onClick = {
                         folderToDelete?.let { onRemoveFolder(it) }
@@ -120,13 +114,11 @@ fun FolderManagementDialog(
                 ) {
                     Text("Remove")
                 }
-            },
-            dismissButton = {
                 TextButton(onClick = { folderToDelete = null }) {
                     Text("Cancel")
                 }
             }
-        )
+        }
     }
 }
 
@@ -154,7 +146,7 @@ fun FolderDialogItem(uriString: String, onRemove: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                Icons.Default.Folder,
+                Icons.Default.AutoAwesomeMotion,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(24.dp)
@@ -172,7 +164,7 @@ fun FolderDialogItem(uriString: String, onRemove: () -> Unit) {
                 modifier = Modifier.size(32.dp)
             ) {
                 Icon(
-                    Icons.Default.Delete,
+                    Icons.Default.BubbleChart,
                     contentDescription = "Remove",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp)

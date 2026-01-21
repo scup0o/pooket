@@ -20,7 +20,8 @@ import androidx.core.graphics.drawable.toDrawable
 fun NightLightOverlay(
     isEnabled: Boolean,
     warmth: Float,
-    dimming: Float
+    dimming: Float,
+    modifier: Modifier = Modifier.fillMaxSize()
 ) {
     if (!isEnabled) return
     // < android 9 (API 28) or older
@@ -28,7 +29,7 @@ fun NightLightOverlay(
 
     if (useLegacyRendering) {
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
+            modifier = modifier,
             factory = { context ->
                 FrameLayout(context).apply {
                     layoutParams = ViewGroup.LayoutParams(
@@ -76,7 +77,7 @@ fun NightLightOverlay(
             }
         )
     } else {
-        Canvas(modifier = Modifier.fillMaxSize()) {
+        Canvas(modifier = modifier) {
             //warmth
             val coldColor = Color(1.0f, 0.95f, 0.9f)
             val deepColor = Color(1.0f, 0.6f, 0.2f)
