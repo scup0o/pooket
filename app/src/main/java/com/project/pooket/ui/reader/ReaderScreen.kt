@@ -222,10 +222,7 @@ fun ReaderScreen(
                         .pointerInput(isVerticalMode, isTextMode) {
                             if (isTextMode) return@pointerInput
                             detectTapGestures(
-                                onTap = {
-                                    viewModel.clearAllSelection()
-//                                    showControls = !showControls
-                                },
+                                onTap = { viewModel.clearAllSelection() },
                                 onDoubleTap = {
                                     if (globalScale > 1f) {
                                         globalScale = 1f
@@ -240,27 +237,38 @@ fun ReaderScreen(
                             if (isTextMode) return@pointerInput
                             detectTransformGestures { _, pan, zoom, _ ->
                                 val newScale = (globalScale * zoom).coerceIn(1f, 5f)
+
                                 val effectivePan = if (isViewportLocked) Offset(0f, pan.y) else pan
-                                globalOffset = clampOffset(
-                                    proposedOffset = globalOffset + effectivePan,
-                                    scale = newScale,
-                                    size = size.toSize()
-                                )
+
+                                val proposedOffset = globalOffset + effectivePan
+
+                                val clampedOffset = clampOffset(proposedOffset, newScale, size.toSize())
+
                                 globalScale = newScale
+                                globalOffset = clampedOffset
+
+                                val overflowY = proposedOffset.y - clampedOffset.y
+
+                                if (isVerticalMode && overflowY != 0f) {
+                                    listState.dispatchRawDelta(-overflowY)
+                                }
                             }
                         }
                         .graphicsLayer {
                             scaleX = if (isTextMode) 1f else globalScale
                             scaleY = if (isTextMode) 1f else globalScale
                             translationX = if (isTextMode) 0f else globalOffset.x
-                            translationY = if (isTextMode || isVerticalMode) 0f else globalOffset.y
+                            translationY = if (isTextMode) 0f else globalOffset.y
                         }
                 ) {
                     if (isVerticalMode) {
-                        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.fillMaxSize(),
+                            userScrollEnabled = isTextMode || globalScale <= 1.01f
+                        ) {
                             items(count = totalPages, key = { it }) { index ->
-                                val pageNotes =
-                                    remember(notes) { notes.filter { it.pageIndex == index } }
+                                val pageNotes = remember(notes) { notes.filter { it.pageIndex == index } }
                                 PdfPageItem(
                                     pageIndex = index,
                                     viewModel = viewModel,
@@ -276,11 +284,10 @@ fun ReaderScreen(
                     } else {
                         HorizontalPager(
                             state = pagerState,
-                            userScrollEnabled = !isTextMode && (globalScale <= 1f || isViewportLocked),
+                            userScrollEnabled = !isTextMode && (globalScale <= 1.01f || isViewportLocked),
                             beyondViewportPageCount = 1
                         ) { index ->
-                            val pageNotes =
-                                remember(notes) { notes.filter { it.pageIndex == index } }
+                            val pageNotes = remember(notes) { notes.filter { it.pageIndex == index } }
                             PdfPageItem(
                                 pageIndex = index,
                                 viewModel = viewModel,

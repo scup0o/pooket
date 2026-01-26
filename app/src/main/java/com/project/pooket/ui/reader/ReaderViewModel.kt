@@ -373,9 +373,7 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    // ----------------------------------------------------------------------
     // COORDINATE MAPPING & SEARCH ALGORITHMS
-    // ----------------------------------------------------------------------
 
     suspend fun getPageChars(pageIndex: Int): List<PdfChar> = withContext(Dispatchers.IO) {
         pageCharsCache.get(pageIndex)?.let { return@withContext it }
@@ -456,9 +454,7 @@ class ReaderViewModel @Inject constructor(
     }
 
 
-    // ----------------------------------------------------------------------
     // GESTURE & SELECTION LOGIC
-    // ----------------------------------------------------------------------
 
     fun onLongPress(pageIndex: Int, touchPoint: Offset, viewSize: Size) {
         viewModelScope.launch(Dispatchers.Default) {
@@ -570,9 +566,7 @@ class ReaderViewModel @Inject constructor(
     fun onDragEnd() { setDraggingHandle(DragHandle.NONE) }
 
 
-    // ----------------------------------------------------------------------
     // TEXT HIGHLIGHT SYNC LOGIC
-    // ----------------------------------------------------------------------
 
     suspend fun processTextHighlights(rawText: String, pageNotes: List<NoteEntity>): AnnotatedString = withContext(Dispatchers.Default) {
         buildAnnotatedString {
@@ -629,9 +623,7 @@ class ReaderViewModel @Inject constructor(
         return null
     }
 
-    // ----------------------------------------------------------------------
     // UTILITIES
-    // ----------------------------------------------------------------------
 
     private fun mergeCharsToLineRects(chars: List<PdfChar>): List<NormRect> {
         if (chars.isEmpty()) return emptyList()
