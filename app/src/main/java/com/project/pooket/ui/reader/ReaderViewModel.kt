@@ -109,9 +109,9 @@ class ReaderViewModel @Inject constructor(
 
     init {
         PDFBoxResourceLoader.init(app)
-        viewModelScope.launch(Dispatchers.IO){
-            trimBookCache()
-        }
+//        viewModelScope.launch(Dispatchers.IO){
+//            trimBookCache()
+//        }
     }
 
     //clean up
@@ -154,45 +154,27 @@ class ReaderViewModel @Inject constructor(
                     fileDescriptor?.close()
                     fileDescriptor = null
                     bitmapCache.evictAll()
-                } catch (e: Exception) { Log.e("ReaderVM", "Renderer cleanup error", e) }
+                } catch (e: Exception) { Log.e("ReaderVM", "Cleanup error", e) }
             }
-
             pdfBoxMutex.withLock {
                 try {
                     pdDocument?.close()
                     pdDocument = null
                     textCache.evictAll()
                     pageCharsCache.evictAll()
-                } catch (e: Exception) { Log.e("ReaderVM", "PDFBox cleanup error", e) }
+                } catch (e: Exception) { }
             }
         }
     }
-
-    //load + render pdf
-    private fun getTempFile(uri: String): File {
-        val filename = "cached_book_${uri.hashCode()}.pdf"
-        return File(app.cacheDir, filename)
-    }
-
-    private fun ensurePdDocumentLoaded(): PDDocument? {
+    private suspend fun ensurePdDocumentLoaded(): PDDocument? {
         if (pdDocument == null && currentBookUri != null) {
             try {
-                val tempFile = getTempFile(currentBookUri!!)
-
-                if (!tempFile.exists()) {
-                    val uri = currentBookUri!!.toUri()
-                    app.contentResolver.openInputStream(uri)?.use { input ->
-                        val tmpWriteFile = File(tempFile.parent, "${tempFile.name}.tmp")
-                        tmpWriteFile.outputStream().use { output -> input.copyTo(output) }
-                        tmpWriteFile.renameTo(tempFile)
-                    }
-                } else {
-                    tempFile.setLastModified(System.currentTimeMillis())
+                val uri = currentBookUri!!.toUri()
+                app.contentResolver.openInputStream(uri)?.use { inputStream ->
+                    pdDocument = PDDocument.load(inputStream, MemoryUsageSetting.setupTempFileOnly())
                 }
-
-                pdDocument = PDDocument.load(tempFile, MemoryUsageSetting.setupTempFileOnly())
             } catch (e: Exception) {
-                Log.e("ReaderVM", "Failed to load PDDocument", e)
+                Log.e("ReaderVM", "Direct PDFBox load failed", e)
             }
         }
         return pdDocument
@@ -228,7 +210,7 @@ class ReaderViewModel @Inject constructor(
                 }
                 loadNotes(uriString)
             } catch (e: Exception) {
-                Log.e("ReaderVM", "Failed to load PDF", e)
+                Log.e("ReaderVM", "Direct load failed", e)
             } finally {
                 _isLoading.value = false
             }
