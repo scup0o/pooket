@@ -41,7 +41,9 @@ import kotlin.math.sqrt
 
 enum class DragHandle { NONE, START, END }
 private val WHITESPACE_REGEX = "\\s+".toRegex()
-
+private val LINE_BREAK_REGEX = "\\r?\\n".toRegex()
+private val MULTI_SPACE_REGEX = " +".toRegex()
+private val LIST_START_REGEX = "^\\s*[•\\-*\\d+\\)]".toRegex()
 @HiltViewModel
 class ReaderViewModel @Inject constructor(
     private val app: Application,
@@ -120,8 +122,8 @@ class ReaderViewModel @Inject constructor(
 
     private fun trimBookCache() {
         val cacheDir = app.cacheDir
-        val maxCacheSize = 100 * 1024 * 1024L //100 MB limit
-        val maxFileCount = 5 // max 5 recent books
+        val maxCacheSize = 100 * 1024 * 1024L
+        val maxFileCount = 5
 
         val bookFiles = cacheDir.listFiles { _, name ->
             name.startsWith("cached_book_") && name.endsWith(".pdf")
@@ -160,7 +162,7 @@ class ReaderViewModel @Inject constructor(
                     pdDocument?.close()
                     pdDocument = null
                     textCache.evictAll()
-                    pageCharsCache.evictAll()// Ensure this is the LruCache version
+                    pageCharsCache.evictAll()
                 } catch (e: Exception) { Log.e("ReaderVM", "PDFBox cleanup error", e) }
             }
         }
@@ -265,6 +267,7 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
+
     suspend fun extractText(index: Int): String = withContext(Dispatchers.IO) {
         textCache.get(index)?.let { return@withContext it }
 
@@ -278,8 +281,18 @@ class ReaderViewModel @Inject constructor(
                 val stripper = PDFTextStripper().apply {
                     startPage = index + 1
                     endPage = index + 1
+                    sortByPosition = true
+
+                    averageCharTolerance = 0.6f
+                    spacingTolerance = 0.5f
                 }
-                val text = stripper.getText(doc).trim()
+
+                val rawText = stripper.getText(doc)
+
+                var text = java.text.Normalizer.normalize(rawText, java.text.Normalizer.Form.NFKC)
+
+                text = processReflow(text)
+
                 if (text.isNotEmpty()) textCache.put(index, text)
                 text
             } catch (e: Exception) {
@@ -288,8 +301,45 @@ class ReaderViewModel @Inject constructor(
             }
         }
     }
+    private fun processReflow(input: String): String {
+        val lines = input.split(LINE_BREAK_REGEX)
+        val result = StringBuilder()
 
-    //ui control
+        for (i in lines.indices) {
+            val currentLine = lines[i].trim()
+            if (currentLine.isEmpty()) {
+                result.append("\n\n")
+                continue
+            }
+
+            val isHyphenated = currentLine.endsWith("-")
+            val cleanLine = if (isHyphenated) currentLine.dropLast(1) else currentLine
+
+            result.append(cleanLine)
+
+            if (i < lines.lastIndex) {
+                val nextLine = lines[i + 1].trim()
+
+                val isShortLine = currentLine.length < 40
+                val isList = LIST_START_REGEX.containsMatchIn(nextLine)
+                val startsWithLower = nextLine.firstOrNull()?.isLowerCase() ?: false
+
+                if (isHyphenated) {
+                    continue
+                } else if (!isShortLine && !isList && (startsWithLower || !currentLine.endsWith("."))) {
+                    result.append(" ")
+                } else {
+                    result.append("\n")
+                }
+            }
+        }
+
+        return result.toString()
+            .replace(MULTI_SPACE_REGEX, " ")
+            .replace("\n\n\n+", "\n\n")
+            .trim()
+    }
+
     fun toggleReadingMode() {
         _isVerticalScrollMode.value = !_isVerticalScrollMode.value
         clearAllSelection()
