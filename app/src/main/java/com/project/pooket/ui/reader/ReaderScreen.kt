@@ -53,7 +53,10 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
+private val NoJumpSpec = object : BringIntoViewSpec {
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = 0f
+}
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ReaderScreen(
     bookTitle: String,
@@ -207,12 +210,13 @@ fun ReaderScreen(
         },
         floatingActionButtonPosition = FabPosition.Center
     ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .clipToBounds()
-        ) {
+        CompositionLocalProvider(LocalBringIntoViewSpec provides NoJumpSpec) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .clipToBounds()
+            ) {
             if (isLoading || totalPages == 0) {
                 CircularProgressIndicator(Modifier.align(Alignment.Center))
             } else {
@@ -332,7 +336,7 @@ fun ReaderScreen(
                     onClose = { viewModel.clearAllSelection() }
                 )
             }
-        }
+        }}
     }
 
     if (showNotesSheet) {
