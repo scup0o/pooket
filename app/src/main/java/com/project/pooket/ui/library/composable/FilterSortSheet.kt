@@ -42,10 +42,14 @@ import com.project.pooket.ui.library.BookCompletedFilter
 import com.project.pooket.ui.library.BookSortOption
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Replay
+import androidx.compose.material.icons.rounded.Signpost
 import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.SelectableChipColors
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -88,7 +92,9 @@ fun FilterSortSheet(
                 )
             }
         )
-        Column() {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
             Text(
                 "Filter books by..."
             )
@@ -98,15 +104,24 @@ fun FilterSortSheet(
                 shape = RoundedCornerShape(25),
                 border = BorderStroke(
                     width = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                 )
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Sort by")
-                    Row {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically){
+                        Icon(
+                            Icons.Rounded.Signpost, null
+                        )
+                        Text("Sort by", color = MaterialTheme.colorScheme.onSurface)
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Text(
                             tempSortOption.label
                         )
@@ -125,10 +140,12 @@ fun FilterSortSheet(
             LazyRow(
                 modifier = Modifier
                     .fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 items(BookCompletedFilter.entries) { filter ->
                     val isSelected = tempFilters.contains(filter)
                     FilterChip(
+                        colors = FilterChipDefaults.filterChipColors(),
                         selected = isSelected,
                         onClick = {
                             tempFilters = if (isSelected) {
@@ -141,7 +158,7 @@ fun FilterSortSheet(
                         leadingIcon = if (isSelected) {
                             {
                                 Icon(
-                                    imageVector = Icons.Default.Check,
+                                    imageVector = Icons.Rounded.Check,
                                     contentDescription = null,
                                 )
                             }

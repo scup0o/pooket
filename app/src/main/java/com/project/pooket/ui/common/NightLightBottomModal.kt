@@ -41,8 +41,8 @@ fun NightLightBottomModal(
                     .fillMaxWidth()
                     .windowInsetsPadding(BottomSheetDefaults.windowInsets)
                     .padding(horizontal = 16.dp)
-                    .padding(top = 30.dp),
-                verticalArrangement = Arrangement.spacedBy(15.dp)
+                    .padding(vertical = 30.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
                 content()
             }

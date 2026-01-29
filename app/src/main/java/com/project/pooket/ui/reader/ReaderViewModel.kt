@@ -109,40 +109,12 @@ class ReaderViewModel @Inject constructor(
 
     init {
         PDFBoxResourceLoader.init(app)
-//        viewModelScope.launch(Dispatchers.IO){
-//            trimBookCache()
-//        }
     }
 
     //clean up
     override fun onCleared() {
         super.onCleared()
         cleanupResources()
-    }
-
-    private fun trimBookCache() {
-        val cacheDir = app.cacheDir
-        val maxCacheSize = 100 * 1024 * 1024L
-        val maxFileCount = 5
-
-        val bookFiles = cacheDir.listFiles { _, name ->
-            name.startsWith("cached_book_") && name.endsWith(".pdf")
-        } ?: return
-
-        val sortedFiles = bookFiles.sortedBy { it.lastModified() }.toMutableList()
-
-        var currentTotalSize = sortedFiles.sumOf { it.length() }
-
-        while (sortedFiles.isNotEmpty() && (currentTotalSize > maxCacheSize || sortedFiles.size > maxFileCount)) {
-            val fileToDelete = sortedFiles.removeAt(0)
-            if (fileToDelete.exists()) {
-                val size = fileToDelete.length()
-                if (fileToDelete.delete()) {
-                    currentTotalSize -= size
-                    Log.d("ReaderVM", "Cleaned up old cache file: ${fileToDelete.name}")
-                }
-            }
-        }
     }
 
     private fun cleanupResources() {
