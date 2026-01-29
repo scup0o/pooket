@@ -2,8 +2,13 @@ package com.project.pooket.ui.reader
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.graphics.Paint
 import android.graphics.pdf.PdfRenderer
+import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.util.Log
 import android.util.LruCache
 import androidx.compose.ui.geometry.Offset
@@ -13,6 +18,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.sp
 import androidx.core.graphics.createBitmap
 import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
@@ -32,8 +39,9 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import nl.siegmann.epublib.epub.EpubReader
+import org.jsoup.Jsoup
 import java.io.ByteArrayOutputStream
-import java.io.File
 import java.io.OutputStreamWriter
 import javax.inject.Inject
 import kotlin.math.abs
@@ -44,6 +52,7 @@ private val WHITESPACE_REGEX = "\\s+".toRegex()
 private val LINE_BREAK_REGEX = "\\r?\\n".toRegex()
 private val MULTI_SPACE_REGEX = " +".toRegex()
 private val LIST_START_REGEX = "^\\s*[•\\-*\\d+\\)]".toRegex()
+
 @HiltViewModel
 class ReaderViewModel @Inject constructor(
     private val app: Application,
@@ -57,6 +66,18 @@ class ReaderViewModel @Inject constructor(
     private var fileDescriptor: ParcelFileDescriptor? = null
     private var pdDocument: PDDocument? = null
     private var saveJob: Job? = null
+
+    // EPUB specific state
+    private val _isEpub = MutableStateFlow(false)
+    val isEpub = _isEpub.asStateFlow()
+
+    // EPUB Pagination Data
+    data class EpubVirtualPage(val chapterIndex: Int, val startOffset: Int, val endOffset: Int)
+    private var epubChapters = listOf<AnnotatedString>() // Cached full chapters
+    private var epubPages = listOf<EpubVirtualPage>() // Calculated page slices
+    private var paginationJob: Job? = null
+    private var screenSize: Size? = null
+    private var screenDensity: Density? = null
 
     //ui universal state
     private var currentBookUri: String? = null
@@ -96,8 +117,9 @@ class ReaderViewModel @Inject constructor(
     )
     private val _textSelection = MutableStateFlow<TextSelectionState?>(null)
     val textSelection = _textSelection.asStateFlow()
-    val currentSelectionText = combine(_selectionState, _textSelection, _isTextMode) { img, txt, isText ->
-        if (isText) txt?.text else img?.selectedText
+
+    val currentSelectionText = combine(_selectionState, _textSelection, _isTextMode, _isEpub) { img, txt, isText, isEpub ->
+        if (isText || isEpub) txt?.text else img?.selectedText
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
 
     // cache
@@ -111,7 +133,6 @@ class ReaderViewModel @Inject constructor(
         PDFBoxResourceLoader.init(app)
     }
 
-    //clean up
     override fun onCleared() {
         super.onCleared()
         cleanupResources()
@@ -136,9 +157,13 @@ class ReaderViewModel @Inject constructor(
                     pageCharsCache.evictAll()
                 } catch (e: Exception) { }
             }
+            epubChapters = emptyList()
+            epubPages = emptyList()
         }
     }
     private suspend fun ensurePdDocumentLoaded(): PDDocument? {
+        if (_isEpub.value) return null
+
         if (pdDocument == null && currentBookUri != null) {
             try {
                 val uri = currentBookUri!!.toUri()
@@ -151,8 +176,9 @@ class ReaderViewModel @Inject constructor(
         }
         return pdDocument
     }
-    fun loadPdf(uriString: String) {
-        if (currentBookUri == uriString && _pdfRenderer.value != null) {
+
+    fun loadBook(uriString: String) {
+        if (currentBookUri == uriString && (_pdfRenderer.value != null || epubChapters.isNotEmpty())) {
             _isLoading.value = false
             return
         }
@@ -163,24 +189,28 @@ class ReaderViewModel @Inject constructor(
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                val uri = Uri.parse(uriString)
+                val mimeType = app.contentResolver.getType(uri) ?: ""
+
+                if (mimeType == "application/pdf" || uriString.endsWith(".pdf", true)) {
+                    _isEpub.value = false
+                    loadPdfInternal(uri)
+                } else {
+                    _isEpub.value = true
+                    _isTextMode.value = true
+                    loadEpubInternal(uri)
+                }
+
                 val book = repository.getBook(uriString)
                 _initialPage.value = book?.lastPage ?: 0
                 localIsCompleted = book?.isCompleted == true
 
-                val uri = uriString.toUri()
-                val fd = app.contentResolver.openFileDescriptor(uri, "r")
-                fileDescriptor = fd
-
-                if (fd != null) {
-                    val renderer = PdfRenderer(fd)
-                    _pdfRenderer.value = renderer
-                    _pageCount.value = renderer.pageCount
-
-                    if ((book?.totalPages ?: 0) == 0 && renderer.pageCount > 0) {
-                        repository.initTotalPages(uriString, renderer.pageCount)
-                    }
-                }
                 loadNotes(uriString)
+
+                val currentTotal = _pageCount.value
+                if ((book?.totalPages ?: 0) == 0 && currentTotal > 0) {
+                    repository.initTotalPages(uriString, currentTotal)
+                }
             } catch (e: Exception) {
                 Log.e("ReaderVM", "Direct load failed", e)
             } finally {
@@ -189,7 +219,101 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
+    private suspend fun loadPdfInternal(uri: Uri) {
+        val fd = app.contentResolver.openFileDescriptor(uri, "r")
+        fileDescriptor = fd
+        if (fd != null) {
+            val renderer = PdfRenderer(fd)
+            _pdfRenderer.value = renderer
+            _pageCount.value = renderer.pageCount
+        }
+    }
+
+    private suspend fun loadEpubInternal(uri: Uri) {
+        val stream = app.contentResolver.openInputStream(uri) ?: throw Exception("Cannot open EPUB")
+        val book = EpubReader().readEpub(stream)
+
+        val chapters = mutableListOf<AnnotatedString>()
+        book.spine.spineReferences.forEach { ref ->
+            try {
+                val html = String(ref.resource.data, Charsets.UTF_8)
+                val cleanText = Jsoup.parse(html).body().text()
+                chapters.add(AnnotatedString(cleanText))
+            } catch (e: Exception) {
+                chapters.add(AnnotatedString(""))
+            }
+        }
+        epubChapters = chapters
+        epubPages = chapters.mapIndexed { idx, content -> EpubVirtualPage(idx, 0, content.length) }
+        _pageCount.value = epubPages.size
+    }
+
+    fun onScreenSizeReady(size: Size, density: Density) {
+        this.screenSize = size
+        this.screenDensity = density
+        if (_isEpub.value && epubPages.isEmpty()) {
+            triggerEpubPagination()
+        }
+    }
+
+
+    private fun triggerEpubPagination() {
+        val w = screenSize?.width?.toInt() ?: return
+        val h = screenSize?.height?.toInt() ?: return
+        val d = screenDensity ?: return
+
+        paginationJob?.cancel()
+        paginationJob = viewModelScope.launch(Dispatchers.Default) {
+            delay(100)
+
+            val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                textSize = with(d) { _fontSize.value.sp.toPx() }
+                color = android.graphics.Color.BLACK
+            }
+
+            val newPages = mutableListOf<EpubVirtualPage>()
+            epubChapters.forEachIndexed { chapterIndex, content ->
+                if (content.isEmpty()) return@forEachIndexed
+
+                val layout = StaticLayout.Builder.obtain(content, 0, content.length, paint, w)
+                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                    .setLineSpacing(0f, 1.4f)
+                    .setIncludePad(false)
+                    .build()
+
+                var startLine = 0
+                var currentY = 0
+
+                while (startLine < layout.lineCount) {
+                    val targetBottom = currentY + h
+                    var endLine = layout.getLineForVertical(targetBottom)
+                    if (endLine > startLine && layout.getLineBottom(endLine) > targetBottom) endLine--
+                    if (endLine < startLine) endLine = startLine
+
+                    val start = layout.getLineStart(startLine)
+                    val end = layout.getLineEnd(endLine)
+                    newPages.add(EpubVirtualPage(chapterIndex, start, end))
+
+                    startLine = endLine + 1
+                    currentY = layout.getLineTop(startLine)
+                }
+            }
+            epubPages = newPages
+            _pageCount.value = newPages.size
+        }
+    }
+
+    fun getEpubPageContent(index: Int): AnnotatedString {
+        if (!_isEpub.value || index !in epubPages.indices) return AnnotatedString("")
+        val vPage = epubPages[index]
+        val chapter = epubChapters.getOrNull(vPage.chapterIndex) ?: return AnnotatedString("")
+        if (vPage.startOffset >= chapter.length) return AnnotatedString("")
+        return chapter.subSequence(vPage.startOffset, vPage.endOffset)
+    }
+
     suspend fun renderPage(index: Int): Bitmap? = withContext(Dispatchers.Default) {
+        if (_isEpub.value) return@withContext null
+
         val renderer = _pdfRenderer.value ?: return@withContext null
         bitmapCache.get(index)?.let { return@withContext it }
 
@@ -223,6 +347,10 @@ class ReaderViewModel @Inject constructor(
 
 
     suspend fun extractText(index: Int): String = withContext(Dispatchers.IO) {
+        if (_isEpub.value) {
+            return@withContext getEpubPageContent(index).text
+        }
+
         textCache.get(index)?.let { return@withContext it }
 
         pdfBoxMutex.withLock {
@@ -300,6 +428,7 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun toggleTextMode() {
+        if (_isEpub.value) return
         _isTextMode.value = !_isTextMode.value
         clearAllSelection()
     }
@@ -331,9 +460,10 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    fun setFontSize(size: Float) { _fontSize.value = size }
+    fun setFontSize(size: Float) {
+        _fontSize.value = size
+    }
 
-    // note
     fun loadNotes(uri: String) {
         viewModelScope.launch {
             noteRepository.getNotes(uri).collect { _notes.value = it }
@@ -343,10 +473,10 @@ class ReaderViewModel @Inject constructor(
     fun saveNote(noteContent: String) {
         val uri = currentBookUri ?: return
         viewModelScope.launch {
-            val noteEntity = if (_isTextMode.value) {
+            val noteEntity = if (_isTextMode.value || _isEpub.value) {
                 val sel = _textSelection.value
                 if (sel != null && !sel.range.collapsed) {
-                    val rects = findRectsForText(sel.pageIndex, sel.text)
+                    val rects = if (_isEpub.value) emptyList() else findRectsForText(sel.pageIndex, sel.text)
                     NoteEntity(
                         bookUri = uri,
                         pageIndex = sel.pageIndex,
@@ -377,9 +507,9 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    // COORDINATE MAPPING & SEARCH ALGORITHMS
-
     suspend fun getPageChars(pageIndex: Int): List<PdfChar> = withContext(Dispatchers.IO) {
+        if (_isEpub.value) return@withContext emptyList()
+
         pageCharsCache.get(pageIndex)?.let { return@withContext it }
         pdfBoxMutex.withLock {
             pageCharsCache.get(pageIndex)?.let { return@withLock it }
@@ -394,7 +524,6 @@ class ReaderViewModel @Inject constructor(
                 stripper.startPage = pageIndex + 1
                 stripper.endPage = pageIndex + 1
 
-                // dummy write to trigger parsing
                 stripper.writeText(doc, OutputStreamWriter(ByteArrayOutputStream()))
 
                 val chars = stripper.chars
@@ -409,11 +538,14 @@ class ReaderViewModel @Inject constructor(
     }
 
     suspend fun getRectsForNote(note: NoteEntity): List<NormRect> {
+        if (_isEpub.value) return emptyList()
         if (note.rects.isNotEmpty()) return note.rects
         return findRectsForText(note.pageIndex, note.originalText)
     }
 
     suspend fun findRectsForText(pageIndex: Int, text: String): List<NormRect> = withContext(Dispatchers.Default) {
+        if (_isEpub.value) return@withContext emptyList()
+
         if (text.isBlank()) return@withContext emptyList()
         val chars = getPageChars(pageIndex)
         if (chars.isEmpty()) return@withContext emptyList()
@@ -458,9 +590,9 @@ class ReaderViewModel @Inject constructor(
     }
 
 
-    // GESTURE & SELECTION LOGIC
-
     fun onLongPress(pageIndex: Int, touchPoint: Offset, viewSize: Size) {
+        if (_isEpub.value || _isTextMode.value) return
+
         viewModelScope.launch(Dispatchers.Default) {
             val chars = getPageChars(pageIndex)
             val normPoint = Offset(touchPoint.x / viewSize.width, touchPoint.y / viewSize.height)
@@ -490,6 +622,8 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun onDrag(dragPoint: Offset, viewSize: Size) {
+        if (_isEpub.value || _isTextMode.value) return
+
         val current = _selectionState.value ?: return
         if (current.activeHandle == DragHandle.NONE) return
 
@@ -570,8 +704,6 @@ class ReaderViewModel @Inject constructor(
     fun onDragEnd() { setDraggingHandle(DragHandle.NONE) }
 
 
-    // TEXT HIGHLIGHT SYNC LOGIC
-
     suspend fun processTextHighlights(rawText: String, pageNotes: List<NoteEntity>): AnnotatedString = withContext(Dispatchers.Default) {
         buildAnnotatedString {
             append(rawText)
@@ -626,8 +758,6 @@ class ReaderViewModel @Inject constructor(
         }
         return null
     }
-
-    // UTILITIES
 
     private fun mergeCharsToLineRects(chars: List<PdfChar>): List<NormRect> {
         if (chars.isEmpty()) return emptyList()

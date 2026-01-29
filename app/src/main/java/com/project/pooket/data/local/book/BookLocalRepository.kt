@@ -92,8 +92,9 @@ class BookLocalRepository @Inject constructor(
             while (cursor.moveToNext()) {
                 val name = cursor.getString(nameCol) ?: continue
                 val mimeType = cursor.getString(mimeCol) ?: ""
+
                 val isPdf = mimeType == "application/pdf" || name.endsWith(".pdf", true)
-                val isEpub = name.endsWith(".epub", true)
+                val isEpub = mimeType == "application/epub+zip" || name.endsWith(".epub", true)
 
                 if (isPdf || isEpub) {
                     val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, cursor.getString(idCol))

@@ -1,61 +1,43 @@
 package com.project.pooket.ui.reader
 
-import android.util.Log
 import androidx.compose.animation.*
-import androidx.compose.foundation.*
-import androidx.compose.foundation.gestures.*
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Note
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.rounded.ArrowBackIosNew
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.input.pointer.*
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.TextToolbar
-import androidx.compose.ui.platform.TextToolbarStatus
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.*
+import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.project.pooket.data.local.note.NoteEntity
-import com.project.pooket.ui.common.NightLightBottomModal
-import com.project.pooket.ui.reader.composable.FontSizeControl
-import com.project.pooket.ui.reader.composable.NoteInputDialog
-import com.project.pooket.ui.reader.composable.NotesListSheet
-import com.project.pooket.ui.reader.composable.PageIndicator
-import com.project.pooket.ui.reader.composable.PdfPageItem
-import com.project.pooket.ui.reader.composable.ReaderControls
-import com.project.pooket.ui.reader.composable.SelectionControlBar
+import com.project.pooket.ui.reader.composable.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-private val NoJumpSpec = object : BringIntoViewSpec {
+
+private val NoJumpSpec = object : androidx.compose.foundation.gestures.BringIntoViewSpec {
     override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = 0f
 }
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ReaderScreen(
@@ -68,12 +50,17 @@ fun ReaderScreen(
     //services
     val scope = rememberCoroutineScope()
     val clipboardManager = LocalClipboardManager.current
+    val density = LocalDensity.current
 
     //viewmodel-state
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val totalPages by viewModel.pageCount.collectAsStateWithLifecycle()
     val isVerticalMode by viewModel.isVerticalScrollMode.collectAsStateWithLifecycle()
-    val isTextMode by viewModel.isTextMode.collectAsStateWithLifecycle()
+    val isEpub by viewModel.isEpub.collectAsStateWithLifecycle()
+    // For EPUB, we treat it as "Text Mode" effectively, but we check isTextMode for PDF toggling
+    val isTextModeState by viewModel.isTextMode.collectAsStateWithLifecycle()
+    val isTextMode = isEpub || isTextModeState
+
     val fontSize by viewModel.fontSize.collectAsStateWithLifecycle()
     val initialPage by viewModel.initialPage.collectAsStateWithLifecycle()
     val selectedText by viewModel.currentSelectionText.collectAsStateWithLifecycle()
@@ -98,7 +85,8 @@ fun ReaderScreen(
     var globalOffset by remember { mutableStateOf(Offset.Zero) }
 
     //init-load
-    LaunchedEffect(bookUri) { viewModel.loadPdf(bookUri) }
+    // [EDITED] Renamed loadPdf to loadBook
+    LaunchedEffect(bookUri) { viewModel.loadBook(bookUri) }
     LaunchedEffect(isLoading, totalPages) {
         if (!isLoading && totalPages > 0 && !isInitialized) {
             masterPage = initialPage
@@ -210,133 +198,153 @@ fun ReaderScreen(
         },
         floatingActionButtonPosition = FabPosition.Center
     ) { innerPadding ->
-        CompositionLocalProvider(LocalBringIntoViewSpec provides NoJumpSpec) {
-            Box(
+        CompositionLocalProvider(androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides NoJumpSpec) {
+
+            // [EDITED] BoxWithConstraints to capture screen size for EPUB pagination
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
                     .clipToBounds()
             ) {
-            if (isLoading || totalPages == 0) {
-                CircularProgressIndicator(Modifier.align(Alignment.Center))
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(isVerticalMode, isTextMode) {
-                            if (isTextMode) return@pointerInput
-                            detectTapGestures(
-                                onTap = { viewModel.clearAllSelection() },
-                                onDoubleTap = {
-                                    if (globalScale > 1f) {
-                                        globalScale = 1f
-                                        globalOffset = Offset.Zero
-                                    } else {
-                                        globalScale = 2.5f
-                                    }
-                                }
-                            )
-                        }
-                        .pointerInput(isVerticalMode, isTextMode, isViewportLocked) {
-                            if (isTextMode) return@pointerInput
-                            detectTransformGestures { _, pan, zoom, _ ->
-                                val newScale = (globalScale * zoom).coerceIn(1f, 5f)
+                // Pass size to VM
+                val constraints = this.constraints
+                LaunchedEffect(constraints.maxWidth, constraints.maxHeight, density) {
+                    if (constraints.maxWidth > 0 && constraints.maxHeight > 0) {
+                        viewModel.onScreenSizeReady(
+                            Size(constraints.maxWidth.toFloat(), constraints.maxHeight.toFloat()),
+                            density
+                        )
+                    }
+                }
 
-                                val effectivePan = if (isViewportLocked) Offset(0f, pan.y) else pan
-
-                                val proposedOffset = globalOffset + effectivePan
-
-                                val clampedOffset = clampOffset(proposedOffset, newScale, size.toSize())
-
-                                globalScale = newScale
-                                globalOffset = clampedOffset
-
-                                val overflowY = proposedOffset.y - clampedOffset.y
-
-                                if (isVerticalMode && overflowY != 0f) {
-                                    listState.dispatchRawDelta(-overflowY)
+                if (isLoading || totalPages == 0) {
+                    CircularProgressIndicator(Modifier.align(Alignment.Center))
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(isVerticalMode, isTextMode) {
+                                // Double tap zoom only allowed in PDF Image mode (not text mode)
+                                if (isTextMode) {
+                                    detectTapGestures(onTap = { viewModel.clearAllSelection(); showControls = !showControls })
+                                } else {
+                                    detectTapGestures(
+                                        onTap = { viewModel.clearAllSelection(); showControls = !showControls },
+                                        onDoubleTap = {
+                                            if (globalScale > 1f) {
+                                                globalScale = 1f
+                                                globalOffset = Offset.Zero
+                                            } else {
+                                                globalScale = 2.5f
+                                            }
+                                        }
+                                    )
                                 }
                             }
-                        }
-                        .graphicsLayer {
-                            scaleX = if (isTextMode) 1f else globalScale
-                            scaleY = if (isTextMode) 1f else globalScale
-                            translationX = if (isTextMode) 0f else globalOffset.x
-                            translationY = if (isTextMode) 0f else globalOffset.y
-                        }
-                ) {
-                    if (isVerticalMode) {
-                        LazyColumn(
-                            state = listState,
-                            modifier = Modifier.fillMaxSize(),
-                            userScrollEnabled = isTextMode || globalScale <= 1.01f
-                        ) {
-                            items(count = totalPages, key = { it }) { index ->
+                            .pointerInput(isVerticalMode, isTextMode, isViewportLocked) {
+                                if (isTextMode) return@pointerInput
+                                detectTransformGestures { _, pan, zoom, _ ->
+                                    val newScale = (globalScale * zoom).coerceIn(1f, 5f)
+                                    val effectivePan = if (isViewportLocked) Offset(0f, pan.y) else pan
+                                    val proposedOffset = globalOffset + effectivePan
+
+                                    // Use BoxWithConstraints size
+                                    val currentSize = Size(constraints.maxWidth.toFloat(), constraints.maxHeight.toFloat())
+                                    val clampedOffset = clampOffset(proposedOffset, newScale, currentSize)
+
+                                    globalScale = newScale
+                                    globalOffset = clampedOffset
+
+                                    val overflowY = proposedOffset.y - clampedOffset.y
+                                    if (isVerticalMode && overflowY != 0f) {
+                                        listState.dispatchRawDelta(-overflowY)
+                                    }
+                                }
+                            }
+                            .graphicsLayer {
+                                scaleX = if (isTextMode) 1f else globalScale
+                                scaleY = if (isTextMode) 1f else globalScale
+                                translationX = if (isTextMode) 0f else globalOffset.x
+                                translationY = if (isTextMode) 0f else globalOffset.y
+                            }
+                    ) {
+                        // [EDITED] Replaced PdfPageItem with BookPageItem
+                        if (isVerticalMode) {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier.fillMaxSize(),
+                                userScrollEnabled = isTextMode || globalScale <= 1.01f
+                            ) {
+                                items(count = totalPages, key = { it }) { index ->
+                                    val pageNotes = remember(notes) { notes.filter { it.pageIndex == index } }
+                                    BookPageItem(
+                                        pageIndex = index,
+                                        viewModel = viewModel,
+                                        isVerticalMode = true,
+                                        isNightMode = isNightMode,
+                                        isTextMode = isTextMode,
+                                        isEpub = isEpub,
+                                        fontSize = fontSize,
+                                        currentZoom = globalScale,
+                                        pageNotes = pageNotes
+                                    )
+                                }
+                            }
+                        } else {
+                            HorizontalPager(
+                                state = pagerState,
+                                userScrollEnabled = (isTextMode || globalScale <= 1.01f) && !isViewportLocked,
+                                beyondViewportPageCount = 1
+                            ) { index ->
                                 val pageNotes = remember(notes) { notes.filter { it.pageIndex == index } }
-                                PdfPageItem(
+                                BookPageItem(
                                     pageIndex = index,
                                     viewModel = viewModel,
-                                    isVerticalMode = true,
+                                    isVerticalMode = false,
                                     isNightMode = isNightMode,
                                     isTextMode = isTextMode,
+                                    isEpub = isEpub,
                                     fontSize = fontSize,
                                     currentZoom = globalScale,
                                     pageNotes = pageNotes
                                 )
                             }
                         }
-                    } else {
-                        HorizontalPager(
-                            state = pagerState,
-                            userScrollEnabled = !isTextMode && (globalScale <= 1.01f || isViewportLocked),
-                            beyondViewportPageCount = 1
-                        ) { index ->
-                            val pageNotes = remember(notes) { notes.filter { it.pageIndex == index } }
-                            PdfPageItem(
-                                pageIndex = index,
-                                viewModel = viewModel,
-                                isVerticalMode = false,
-                                isNightMode = isNightMode,
-                                isTextMode = isTextMode,
-                                fontSize = fontSize,
-                                currentZoom = globalScale,
-                                pageNotes = pageNotes
-                            )
-                        }
+                    }
+                    MenuController(
+                        onToggleMenu = { showControls = !showControls },
+                        modifier = Modifier.align(Alignment.TopEnd)
+                    )
+
+                    if (showControls) {
+                        PageIndicator(
+                            currentPage = masterPage + 1,
+                            totalPages = totalPages,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = if (isTextMode) 180.dp else 100.dp)
+                        )
                     }
                 }
-                MenuController(
-                    onToggleMenu = { showControls = !showControls },
-                    modifier = Modifier.align(Alignment.TopEnd)
-                )
 
-                if (showControls) {
-                    PageIndicator(
-                        currentPage = masterPage + 1,
-                        totalPages = totalPages,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = if (isTextMode) 180.dp else 100.dp)
+                AnimatedVisibility(
+                    visible = selectedText != null,
+                    enter = slideInVertically { -it } + fadeIn(),
+                    exit = slideOutVertically { -it } + fadeOut(),
+                    modifier = Modifier.align(Alignment.TopCenter)
+                ) {
+                    SelectionControlBar(
+                        onCopy = {
+                            selectedText?.let { clipboardManager.setText(AnnotatedString(it)) }
+                            viewModel.clearAllSelection()
+                        },
+                        onNote = { showNoteDialog = true },
+                        onClose = { viewModel.clearAllSelection() }
                     )
                 }
             }
-
-            AnimatedVisibility(
-                visible = selectedText != null,
-                enter = slideInVertically { -it } + fadeIn(),
-                exit = slideOutVertically { -it } + fadeOut(),
-                modifier = Modifier.align(Alignment.TopCenter)
-            ) {
-                SelectionControlBar(
-                    onCopy = {
-                        selectedText?.let { clipboardManager.setText(AnnotatedString(it)) }
-                        viewModel.clearAllSelection()
-                    },
-                    onNote = { showNoteDialog = true },
-                    onClose = { viewModel.clearAllSelection() }
-                )
-            }
-        }}
+        }
     }
 
     if (showNotesSheet) {

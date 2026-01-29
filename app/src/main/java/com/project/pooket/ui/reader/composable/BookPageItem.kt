@@ -3,53 +3,34 @@ package com.project.pooket.ui.reader.composable
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.drag
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.gestures.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.ColorMatrix
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
-import androidx.compose.ui.input.pointer.changedToUp
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalTextToolbar
+import androidx.compose.ui.text.AnnotatedString // [EDITED]
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Density
@@ -64,23 +45,32 @@ import com.project.pooket.ui.reader.DragHandle
 import com.project.pooket.ui.reader.ReaderViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlin.collections.forEach
-import kotlin.text.substring
 
 @Composable
-fun PdfPageItem(
+fun BookPageItem(
     pageIndex: Int,
     viewModel: ReaderViewModel,
     isVerticalMode: Boolean,
     isNightMode: Boolean,
     isTextMode: Boolean,
+    isEpub: Boolean,
     fontSize: Float,
     currentZoom: Float,
     pageNotes: List<NoteEntity>,
 ) {
     var clickedNoteContent by remember { mutableStateOf<String?>(null) }
 
-    if (isTextMode) {
+    if (isEpub) {
+        EpubPage(
+            pageIndex = pageIndex,
+            viewModel = viewModel,
+            isNightMode = isNightMode,
+            isVerticalMode = isVerticalMode,
+            fontSize = fontSize,
+            pageNotes = pageNotes,
+            onNoteClick = { clickedNoteContent = it }
+        )
+    } else if (isTextMode) {
         PdfTextPage(
             pageIndex = pageIndex,
             viewModel = viewModel,
@@ -103,6 +93,121 @@ fun PdfPageItem(
 
     if (clickedNoteContent != null) {
         NoteContentDialog(content = clickedNoteContent!!) { clickedNoteContent = null }
+    }
+}
+
+@Composable
+private fun EpubPage(
+    pageIndex: Int,
+    viewModel: ReaderViewModel,
+    isNightMode: Boolean,
+    isVerticalMode: Boolean,
+    fontSize: Float,
+    pageNotes: List<NoteEntity>,
+    onNoteClick: (String) -> Unit
+) {
+    val pageContent by produceState<AnnotatedString?>(initialValue = null, key1 = pageIndex, key2 = fontSize) {
+        value = viewModel.getEpubPageContent(pageIndex)
+    }
+
+    if (pageContent == null) {
+        Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+        return
+    }
+
+    val rawText = pageContent!!
+    var textFieldValue by remember(rawText) { mutableStateOf(TextFieldValue(rawText)) }
+    var layoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+
+    val visualizedText = remember(rawText, pageNotes, isNightMode) {
+        buildAnnotatedString {
+            append(rawText)
+            pageNotes.forEach { note ->
+                val start = note.textRangeStart ?: 0
+                val end = note.textRangeEnd ?: 0
+                val len = rawText.length
+                if (start < len && end > 0) {
+                    addStyle(
+                        SpanStyle(background = Color(0x66FFEB3B)),
+                        start.coerceAtLeast(0),
+                        end.coerceAtMost(len)
+                    )
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(visualizedText) {
+        if (textFieldValue.annotatedString.text == visualizedText.text) {
+            textFieldValue = textFieldValue.copy(annotatedString = visualizedText)
+        }
+    }
+
+    val customToolbar = remember {
+        CustomTextToolbar(
+            onShowMenu = {
+                val sel = textFieldValue.selection
+                if (!sel.collapsed) {
+                    try {
+                        val selectedText = rawText.text.substring(sel.start, sel.end)
+                        viewModel.setTextSelection(pageIndex, selectedText, sel)
+                    } catch (_: Exception) {}
+                }
+            },
+            onHideMenu = { },
+            onCopy = {}
+        )
+    }
+
+    CompositionLocalProvider(
+        LocalTextToolbar provides customToolbar,
+        LocalTextSelectionColors provides TextSelectionColors(
+            handleColor = Color(0xFF2196F3),
+            backgroundColor = Color(0x662196F3)
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 24.dp)
+                .pointerInput(Unit) { detectTapGestures { viewModel.clearAllSelection() } }
+                .then(if (!isVerticalMode) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+        ) {
+            BasicTextField(
+                value = textFieldValue,
+                onValueChange = {
+                    if (it.text == textFieldValue.text) {
+                        textFieldValue = it
+                        if (it.selection.collapsed) viewModel.clearAllSelection()
+                    }
+                },
+                readOnly = true,
+                textStyle = TextStyle(
+                    fontSize = fontSize.sp,
+                    lineHeight = (fontSize * 1.5).sp,
+                    color = if (isNightMode) Color(0xFFD0D0D0) else Color.Black,
+                    textAlign = TextAlign.Justify,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Serif
+                ),
+                modifier = Modifier.fillMaxWidth(),
+                onTextLayout = { layoutResult = it }
+            )
+
+            if (layoutResult != null) {
+                pageNotes.forEach { note ->
+                    note.textRangeStart?.let { start ->
+                        if (start < layoutResult!!.layoutInput.text.length) {
+                            val bounds = layoutResult!!.getBoundingBox(start)
+                            val iconX = bounds.left
+                            val iconY = bounds.top - 24.dp.toPx(LocalDensity.current)
+                            NoteIcon(iconX, iconY, 24.dp) { onNoteClick(note.noteContent) }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -225,6 +330,7 @@ private fun PdfTextPage(
 }
 
 
+// [KEPT ORIGINAL]
 @Composable
 private fun PdfImagePage(
     pageIndex: Int,
