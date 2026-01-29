@@ -41,6 +41,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import nl.siegmann.epublib.epub.EpubReader
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import java.io.ByteArrayOutputStream
 import java.io.OutputStreamWriter
 import javax.inject.Inject
@@ -234,15 +235,37 @@ class ReaderViewModel @Inject constructor(
         val book = EpubReader().readEpub(stream)
 
         val chapters = mutableListOf<AnnotatedString>()
+
         book.spine.spineReferences.forEach { ref ->
             try {
                 val html = String(ref.resource.data, Charsets.UTF_8)
-                val cleanText = Jsoup.parse(html).body().text()
-                chapters.add(AnnotatedString(cleanText))
+                val doc = Jsoup.parse(html)
+
+                doc.select("title, head, script, style, nav, audio, video, img").remove()
+
+                val settings = Document.OutputSettings()
+                settings.prettyPrint(true)
+                doc.outputSettings(settings)
+
+                doc.select("br").before("\\n")
+                doc.select("p").before("\\n")
+                doc.select("h1, h2, h3, h4, h5, h6").before("\\n\\n")
+
+                val cleanText = doc.body()?.text()?.replace("\\n", "\n")?.trim() ?: ""
+
+                val lowerText = cleanText.lowercase()
+
+                val isJunk = cleanText.isEmpty() ||
+                        (cleanText.length < 20 )
+
+                if (!isJunk) {
+                    chapters.add(AnnotatedString(cleanText))
+                }
             } catch (e: Exception) {
-                chapters.add(AnnotatedString(""))
+                Log.e("ReaderVM", "Error processing EPUB chapter", e)
             }
         }
+
         epubChapters = chapters
         epubPages = chapters.mapIndexed { idx, content -> EpubVirtualPage(idx, 0, content.length) }
         _pageCount.value = epubPages.size
