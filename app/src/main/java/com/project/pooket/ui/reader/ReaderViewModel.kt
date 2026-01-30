@@ -2,6 +2,7 @@ package com.project.pooket.ui.reader
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
@@ -42,6 +43,7 @@ import kotlinx.coroutines.sync.withLock
 import nl.siegmann.epublib.epub.EpubReader
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.TextNode
 import java.io.ByteArrayOutputStream
 import java.io.OutputStreamWriter
 import javax.inject.Inject
@@ -71,6 +73,10 @@ class ReaderViewModel @Inject constructor(
     // EPUB specific state
     private val _isEpub = MutableStateFlow(false)
     val isEpub = _isEpub.asStateFlow()
+
+    // [UPDATED] Stores images extracted from EPUB (Key: filename, Value: Bitmap)
+    private val _epubImages = MutableStateFlow<Map<String, Bitmap>>(emptyMap())
+    val epubImages = _epubImages.asStateFlow()
 
     // EPUB Pagination Data
     data class EpubVirtualPage(val chapterIndex: Int, val startOffset: Int, val endOffset: Int)
@@ -160,6 +166,7 @@ class ReaderViewModel @Inject constructor(
             }
             epubChapters = emptyList()
             epubPages = emptyList()
+            _epubImages.value = emptyMap()
         }
     }
     private suspend fun ensurePdDocumentLoaded(): PDDocument? {
@@ -234,6 +241,24 @@ class ReaderViewModel @Inject constructor(
         val stream = app.contentResolver.openInputStream(uri) ?: throw Exception("Cannot open EPUB")
         val book = EpubReader().readEpub(stream)
 
+        val images = mutableMapOf<String, Bitmap>()
+        book.resources.resourceMap.forEach { (path, res) ->
+            if (res.mediaType.toString().startsWith("image/")) {
+                try {
+                    val data = res.data
+                    val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
+                    if (bitmap != null) {
+                        images[path] = bitmap
+                        val filename = path.substringAfterLast("/")
+                        if (filename != path) images[filename] = bitmap
+                    }
+                } catch (e: Exception) {
+                    Log.e("ReaderVM", "Failed to decode image $path", e)
+                }
+            }
+        }
+        _epubImages.value = images
+
         val chapters = mutableListOf<AnnotatedString>()
 
         book.spine.spineReferences.forEach { ref ->
@@ -241,7 +266,12 @@ class ReaderViewModel @Inject constructor(
                 val html = String(ref.resource.data, Charsets.UTF_8)
                 val doc = Jsoup.parse(html)
 
-                doc.select("title, head, script, style, nav, audio, video, img").remove()
+                doc.select("title, head, script, style, nav, audio, video").remove()
+                doc.select("img").forEach { img ->
+                    val src = img.attr("src")
+                    val filename = src.substringAfterLast("/")
+                    img.replaceWith(TextNode("[IMAGE:$filename]"))
+                }
 
                 val settings = Document.OutputSettings()
                 settings.prettyPrint(true)
@@ -251,12 +281,12 @@ class ReaderViewModel @Inject constructor(
                 doc.select("p").before("\\n")
                 doc.select("h1, h2, h3, h4, h5, h6").before("\\n\\n")
 
-                val cleanText = doc.body()?.text()?.replace("\\n", "\n")?.trim() ?: ""
+                val cleanText = doc.body().text().replace("\\n", "\n").trim() ?: ""
 
-                val lowerText = cleanText.lowercase()
+                val hasImage = cleanText.contains("[IMAGE:")
 
-                val isJunk = cleanText.isEmpty() ||
-                        (cleanText.length < 20 )
+                val isJunk = !hasImage && (cleanText.isEmpty() ||
+                        (cleanText.length < 20))
 
                 if (!isJunk) {
                     chapters.add(AnnotatedString(cleanText))

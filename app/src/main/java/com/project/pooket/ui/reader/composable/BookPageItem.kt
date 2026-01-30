@@ -25,12 +25,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalTextToolbar
-import androidx.compose.ui.text.AnnotatedString // [EDITED]
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Density
@@ -45,6 +44,11 @@ import com.project.pooket.ui.reader.DragHandle
 import com.project.pooket.ui.reader.ReaderViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+
+private sealed class EpubElement(val id: String) {
+    data class TextBlock(val uid: Int, val content: AnnotatedString, val globalStartIndex: Int) : EpubElement("text_$uid")
+    data class ImageBlock(val path: String, val uid: Int) : EpubElement("img_${path}_$uid")
+}
 
 @Composable
 fun BookPageItem(
@@ -110,6 +114,9 @@ private fun EpubPage(
         value = viewModel.getEpubPageContent(pageIndex)
     }
 
+    val epubImages by viewModel.epubImages.collectAsState(initial = emptyMap())
+    val globalTextSelection by viewModel.textSelection.collectAsStateWithLifecycle()
+
     if (pageContent == null) {
         Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
@@ -118,91 +125,140 @@ private fun EpubPage(
     }
 
     val rawText = pageContent!!
-    var textFieldValue by remember(rawText) { mutableStateOf(TextFieldValue(rawText)) }
-    var layoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
 
-    val visualizedText = remember(rawText, pageNotes, isNightMode) {
-        buildAnnotatedString {
-            append(rawText)
-            pageNotes.forEach { note ->
-                val start = note.textRangeStart ?: 0
-                val end = note.textRangeEnd ?: 0
-                val len = rawText.length
-                if (start < len && end > 0) {
-                    addStyle(
-                        SpanStyle(background = Color(0x66FFEB3B)),
-                        start.coerceAtLeast(0),
-                        end.coerceAtMost(len)
-                    )
+    val pageElements = remember(rawText) {
+        val elements = mutableListOf<EpubElement>()
+        val textStr = rawText.text
+        val imageRegex = "\\[IMAGE:(.*?)\\]".toRegex()
+        var lastIndex = 0
+        var blockIdCounter = 0
+
+        imageRegex.findAll(textStr).forEach { match ->
+            val rangeStart = match.range.first
+            if (rangeStart > lastIndex) {
+                val subText = rawText.subSequence(lastIndex, rangeStart)
+                if (subText.text.isNotBlank()) {
+                    elements.add(EpubElement.TextBlock(blockIdCounter++, subText, lastIndex))
                 }
             }
+            elements.add(EpubElement.ImageBlock(match.groupValues[1], blockIdCounter++))
+            lastIndex = match.range.last + 1
+        }
+        if (lastIndex < textStr.length) {
+            val subText = rawText.subSequence(lastIndex, textStr.length)
+            if (subText.text.isNotBlank()) {
+                elements.add(EpubElement.TextBlock(blockIdCounter++, subText, lastIndex))
+            }
+        }
+        elements
+    }
+
+    val textStates = remember(pageElements, pageNotes) {
+        val map = mutableStateMapOf<Int, TextFieldValue>()
+        pageElements.filterIsInstance<EpubElement.TextBlock>().forEach { element ->
+            val builder = AnnotatedString.Builder(element.content)
+            val globalStart = element.globalStartIndex
+            val globalEnd = globalStart + element.content.length
+            pageNotes.forEach { note ->
+                val nStart = note.textRangeStart ?: 0
+                val nEnd = note.textRangeEnd ?: 0
+                val intersectStart = maxOf(globalStart, nStart)
+                val intersectEnd = minOf(globalEnd, nEnd)
+                if (intersectStart < intersectEnd) {
+                    builder.addStyle(SpanStyle(background = Color(0x66FFEB3B)), intersectStart - globalStart, intersectEnd - globalStart)
+                }
+            }
+            map[element.uid] = TextFieldValue(builder.toAnnotatedString())
+        }
+        map
+    }
+
+    var activeBlockId by remember { mutableStateOf<Int?>(null) }
+    val density = LocalDensity.current
+
+    LaunchedEffect(globalTextSelection) {
+        if (globalTextSelection == null) {
+            textStates.keys.forEach { key ->
+                val s = textStates[key]
+                if (s != null && !s.selection.collapsed) {
+                    textStates[key] = s.copy(selection = TextRange.Zero)
+                }
+            }
+            activeBlockId = null
         }
     }
 
-    LaunchedEffect(visualizedText) {
-        if (textFieldValue.annotatedString.text == visualizedText.text) {
-            textFieldValue = textFieldValue.copy(annotatedString = visualizedText)
-        }
-    }
-
-    val customToolbar = remember {
+    val customToolbar = remember(activeBlockId) {
         CustomTextToolbar(
-            onShowMenu = {
-                val sel = textFieldValue.selection
-                if (!sel.collapsed) {
-                    try {
-                        val selectedText = rawText.text.substring(sel.start, sel.end)
-                        viewModel.setTextSelection(pageIndex, selectedText, sel)
-                    } catch (_: Exception) {}
+            onShowMenu = { bid ->
+                activeBlockId?.let { id ->
+                    val state = textStates[id]
+                    if (state != null && !state.selection.collapsed) {
+                        val txt = state.text.substring(state.selection.start, state.selection.end)
+                        viewModel.setTextSelection(pageIndex, txt, state.selection)
+                    }
                 }
             },
             onHideMenu = { },
-            onCopy = {}
+            onCopy = { viewModel.clearAllSelection() }
         )
     }
 
     CompositionLocalProvider(
         LocalTextToolbar provides customToolbar,
-        LocalTextSelectionColors provides TextSelectionColors(
-            handleColor = Color(0xFF2196F3),
-            backgroundColor = Color(0x662196F3)
-        )
+        LocalTextSelectionColors provides TextSelectionColors(handleColor = Color(0xFF2196F3), backgroundColor = Color(0x662196F3))
     ) {
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 24.dp)
                 .pointerInput(Unit) { detectTapGestures { viewModel.clearAllSelection() } }
                 .then(if (!isVerticalMode) Modifier.verticalScroll(rememberScrollState()) else Modifier)
         ) {
-            BasicTextField(
-                value = textFieldValue,
-                onValueChange = {
-                    if (it.text == textFieldValue.text) {
-                        textFieldValue = it
-                        if (it.selection.collapsed) viewModel.clearAllSelection()
-                    }
-                },
-                readOnly = true,
-                textStyle = TextStyle(
-                    fontSize = fontSize.sp,
-                    lineHeight = (fontSize * 1.5).sp,
-                    color = if (isNightMode) Color(0xFFD0D0D0) else Color.Black,
-                    textAlign = TextAlign.Justify,
-                    fontFamily = androidx.compose.ui.text.font.FontFamily.Serif
-                ),
-                modifier = Modifier.fillMaxWidth(),
-                onTextLayout = { layoutResult = it }
-            )
+            pageElements.forEach { element ->
+                when (element) {
+                    is EpubElement.TextBlock -> {
+                        var layoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
 
-            if (layoutResult != null) {
-                pageNotes.forEach { note ->
-                    note.textRangeStart?.let { start ->
-                        if (start < layoutResult!!.layoutInput.text.length) {
-                            val bounds = layoutResult!!.getBoundingBox(start)
-                            val iconX = bounds.left
-                            val iconY = bounds.top - 24.dp.toPx(LocalDensity.current)
-                            NoteIcon(iconX, iconY, 24.dp) { onNoteClick(note.noteContent) }
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            BasicTextField(
+                                value = textStates[element.uid] ?: TextFieldValue(),
+                                onValueChange = { newValue ->
+                                    textStates[element.uid] = newValue
+                                    if (!newValue.selection.collapsed) {
+                                        if (activeBlockId != element.uid) {
+                                            activeBlockId?.let { id -> textStates[id] = textStates[id]?.copy(selection = TextRange.Zero) ?: TextFieldValue() }
+                                            activeBlockId = element.uid
+                                        }
+                                        val txt = newValue.text.substring(newValue.selection.start, newValue.selection.end)
+                                        viewModel.setTextSelection(pageIndex, txt, newValue.selection)
+                                    } else if (activeBlockId == element.uid) {
+                                        viewModel.clearAllSelection()
+                                    }
+                                },
+                                readOnly = true,
+                                textStyle = TextStyle(fontSize = fontSize.sp, lineHeight = (fontSize * 1.5).sp, color = if (isNightMode) Color(0xFFD0D0D0) else Color.Black, textAlign = TextAlign.Justify, fontFamily = androidx.compose.ui.text.font.FontFamily.Serif),
+                                modifier = Modifier.fillMaxWidth(),
+                                onTextLayout = { layoutResult = it }
+                            )
+
+                            layoutResult?.let { res ->
+                                pageNotes.forEach { note ->
+                                    val localStart = (note.textRangeStart ?: 0) - element.globalStartIndex
+                                    if (localStart >= 0 && localStart < element.content.length && localStart < res.layoutInput.text.length) {
+                                        val bounds = res.getBoundingBox(localStart)
+                                        val iconX = bounds.left
+                                        val iconY = bounds.top - 24.dp.toPx(density)
+                                        NoteIcon(iconX, iconY, 24.dp) { onNoteClick(note.noteContent) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    is EpubElement.ImageBlock -> {
+                        epubImages[element.path]?.let {
+                            Image(bitmap = it.asImageBitmap(), contentDescription = null, contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp))
                         }
                     }
                 }
@@ -329,8 +385,6 @@ private fun PdfTextPage(
     }
 }
 
-
-// [KEPT ORIGINAL]
 @Composable
 private fun PdfImagePage(
     pageIndex: Int,

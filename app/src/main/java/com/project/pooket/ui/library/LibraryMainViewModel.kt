@@ -104,13 +104,13 @@ class LibraryMainViewModel @Inject constructor(
 
     private fun doesBookMatchFilter(book: BookEntity, filters: Set<BookCompletedFilter>): Boolean {
         if (filters.contains(BookCompletedFilter.COMPLETED)) {
-            if (book.isCompleted == true) return true
+            if (book.isCompleted) return true
         }
         if (filters.contains(BookCompletedFilter.NOT_STARTED)) {
-            if (book.isCompleted != true && book.lastPage == 0 && book.lastReadTime == 0L) return true
+            if (!book.isCompleted && book.lastPage == 0 && book.lastReadTime == 0L) return true
         }
         if (filters.contains(BookCompletedFilter.IN_PROGRESS)) {
-            if (book.isCompleted != true && (book.lastPage > 0 || book.lastReadTime > 0)) return true
+            if (!book.isCompleted && (book.lastPage > 0 || book.lastReadTime > 0)) return true
         }
 
         return false
