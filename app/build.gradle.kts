@@ -50,6 +50,8 @@ android {
     }
     kotlinOptions {
         jvmTarget = "11"
+        freeCompilerArgs += "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi"
+
     }
     buildFeatures {
         compose = true
@@ -66,6 +68,14 @@ android {
 }
 
 dependencies {
+    //epub
+    implementation("com.positiondev.epublib:epublib-core:3.1") {
+        exclude(group = "org.xmlpull", module = "xmlpull")
+        exclude(group = "net.sf.kxml", module = "kxml2")
+    }
+
+    implementation("org.jsoup:jsoup:1.16.1")
+
     //serialization
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 
