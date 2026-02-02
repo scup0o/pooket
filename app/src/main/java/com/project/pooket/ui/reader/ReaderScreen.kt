@@ -35,7 +35,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private val NoJumpSpec = object : androidx.compose.foundation.gestures.BringIntoViewSpec {
-    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = 0f
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float =
+        0f
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -57,7 +58,6 @@ fun ReaderScreen(
     val totalPages by viewModel.pageCount.collectAsStateWithLifecycle()
     val isVerticalMode by viewModel.isVerticalScrollMode.collectAsStateWithLifecycle()
     val isEpub by viewModel.isEpub.collectAsStateWithLifecycle()
-    // For EPUB, we treat it as "Text Mode" effectively, but we check isTextMode for PDF toggling
     val isTextModeState by viewModel.isTextMode.collectAsStateWithLifecycle()
     val isTextMode = isEpub || isTextModeState
 
@@ -85,7 +85,6 @@ fun ReaderScreen(
     var globalOffset by remember { mutableStateOf(Offset.Zero) }
 
     //init-load
-    // [EDITED] Renamed loadPdf to loadBook
     LaunchedEffect(bookUri) { viewModel.loadBook(bookUri) }
     LaunchedEffect(isLoading, totalPages) {
         if (!isLoading && totalPages > 0 && !isInitialized) {
@@ -114,7 +113,8 @@ fun ReaderScreen(
 
                 if (visibleItems.isEmpty()) return@derivedStateOf 0
 
-                val viewportCenter = (layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset) / 2
+                val viewportCenter =
+                    (layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset) / 2
 
                 val centerItem = visibleItems.minByOrNull { item ->
                     val itemCenter = item.offset + (item.size / 2)
@@ -168,7 +168,7 @@ fun ReaderScreen(
     }
 
     Scaffold(
-        containerColor = if(isNightMode) Color.Black else Color.White,
+        containerColor = if (isNightMode) Color.Black else Color.White,
         topBar = {
             ReaderTopBar(
                 visible = showControls,
@@ -199,15 +199,12 @@ fun ReaderScreen(
         floatingActionButtonPosition = FabPosition.Center
     ) { innerPadding ->
         CompositionLocalProvider(androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides NoJumpSpec) {
-
-            // [EDITED] BoxWithConstraints to capture screen size for EPUB pagination
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
                     .clipToBounds()
             ) {
-                // Pass size to VM
                 val constraints = this.constraints
                 LaunchedEffect(constraints.maxWidth, constraints.maxHeight, density) {
                     if (constraints.maxWidth > 0 && constraints.maxHeight > 0) {
@@ -225,12 +222,17 @@ fun ReaderScreen(
                         modifier = Modifier
                             .fillMaxSize()
                             .pointerInput(isVerticalMode, isTextMode) {
-                                // Double tap zoom only allowed in PDF Image mode (not text mode)
                                 if (isTextMode) {
-                                    detectTapGestures(onTap = { viewModel.clearAllSelection(); showControls = !showControls })
+                                    detectTapGestures(onTap = {
+                                        viewModel.clearAllSelection()
+//                                        showControls = !showControls
+                                    })
                                 } else {
                                     detectTapGestures(
-                                        onTap = { viewModel.clearAllSelection(); showControls = !showControls },
+                                        onTap = {
+                                            viewModel.clearAllSelection();
+//                                            showControls = !showControls
+                                        },
                                         onDoubleTap = {
                                             if (globalScale > 1f) {
                                                 globalScale = 1f
@@ -246,12 +248,16 @@ fun ReaderScreen(
                                 if (isTextMode) return@pointerInput
                                 detectTransformGestures { _, pan, zoom, _ ->
                                     val newScale = (globalScale * zoom).coerceIn(1f, 5f)
-                                    val effectivePan = if (isViewportLocked) Offset(0f, pan.y) else pan
+                                    val effectivePan =
+                                        if (isViewportLocked) Offset(0f, pan.y) else pan
                                     val proposedOffset = globalOffset + effectivePan
 
-                                    // Use BoxWithConstraints size
-                                    val currentSize = Size(constraints.maxWidth.toFloat(), constraints.maxHeight.toFloat())
-                                    val clampedOffset = clampOffset(proposedOffset, newScale, currentSize)
+                                    val currentSize = Size(
+                                        constraints.maxWidth.toFloat(),
+                                        constraints.maxHeight.toFloat()
+                                    )
+                                    val clampedOffset =
+                                        clampOffset(proposedOffset, newScale, currentSize)
 
                                     globalScale = newScale
                                     globalOffset = clampedOffset
@@ -269,7 +275,6 @@ fun ReaderScreen(
                                 translationY = if (isTextMode) 0f else globalOffset.y
                             }
                     ) {
-                        // [EDITED] Replaced PdfPageItem with BookPageItem
                         if (isVerticalMode) {
                             LazyColumn(
                                 state = listState,
@@ -277,7 +282,8 @@ fun ReaderScreen(
                                 userScrollEnabled = isTextMode || globalScale <= 1.01f
                             ) {
                                 items(count = totalPages, key = { it }) { index ->
-                                    val pageNotes = remember(notes) { notes.filter { it.pageIndex == index } }
+                                    val pageNotes =
+                                        remember(notes) { notes.filter { it.pageIndex == index } }
                                     BookPageItem(
                                         pageIndex = index,
                                         viewModel = viewModel,
@@ -297,7 +303,8 @@ fun ReaderScreen(
                                 userScrollEnabled = (isTextMode || globalScale <= 1.01f) && !isViewportLocked,
                                 beyondViewportPageCount = 1
                             ) { index ->
-                                val pageNotes = remember(notes) { notes.filter { it.pageIndex == index } }
+                                val pageNotes =
+                                    remember(notes) { notes.filter { it.pageIndex == index } }
                                 BookPageItem(
                                     pageIndex = index,
                                     viewModel = viewModel,

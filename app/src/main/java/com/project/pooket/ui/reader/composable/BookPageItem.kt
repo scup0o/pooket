@@ -30,6 +30,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Density
@@ -46,7 +47,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 private sealed class EpubElement(val id: String) {
-    data class TextBlock(val uid: Int, val content: AnnotatedString, val globalStartIndex: Int) : EpubElement("text_$uid")
+    data class TextBlock(val uid: Int, val content: AnnotatedString, val globalStartIndex: Int) :
+        EpubElement("text_$uid")
+
     data class ImageBlock(val path: String, val uid: Int) : EpubElement("img_${path}_$uid")
 }
 
@@ -76,23 +79,21 @@ fun BookPageItem(
         )
     } else if (isTextMode) {
         PdfTextPage(
-            pageIndex = pageIndex,
-            viewModel = viewModel,
-            isNightMode = isNightMode,
-            isVerticalMode = isVerticalMode,
-            fontSize = fontSize,
-            pageNotes = pageNotes,
-            onNoteClick = { clickedNoteContent = it }
-        )
+            pageIndex,
+            viewModel,
+            isNightMode,
+            isVerticalMode,
+            fontSize,
+            pageNotes,
+            onNoteClick = { clickedNoteContent = it })
     } else {
         PdfImagePage(
-            pageIndex = pageIndex,
-            viewModel = viewModel,
-            isNightMode = isNightMode,
-            currentZoom = currentZoom,
-            pageNotes = pageNotes,
-            onNoteClick = { clickedNoteContent = it }
-        )
+            pageIndex,
+            viewModel,
+            isNightMode,
+            currentZoom,
+            pageNotes,
+            onNoteClick = { clickedNoteContent = it })
     }
 
     if (clickedNoteContent != null) {
@@ -110,15 +111,21 @@ private fun EpubPage(
     pageNotes: List<NoteEntity>,
     onNoteClick: (String) -> Unit
 ) {
-    val pageContent by produceState<AnnotatedString?>(initialValue = null, key1 = pageIndex, key2 = fontSize) {
+    val pageContent by produceState<AnnotatedString?>(
+        initialValue = null,
+        key1 = pageIndex,
+        key2 = fontSize
+    ) {
         value = viewModel.getEpubPageContent(pageIndex)
     }
 
-    val epubImages by viewModel.epubImages.collectAsState(initial = emptyMap())
+    val epubImages by viewModel.epubImages.collectAsStateWithLifecycle(initialValue = emptyMap())
     val globalTextSelection by viewModel.textSelection.collectAsStateWithLifecycle()
 
     if (pageContent == null) {
-        Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier
+            .fillMaxWidth()
+            .height(400.dp), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
         }
         return
@@ -136,19 +143,25 @@ private fun EpubPage(
         imageRegex.findAll(textStr).forEach { match ->
             val rangeStart = match.range.first
             if (rangeStart > lastIndex) {
-                val subText = rawText.subSequence(lastIndex, rangeStart)
-                if (subText.text.isNotBlank()) {
-                    elements.add(EpubElement.TextBlock(blockIdCounter++, subText, lastIndex))
-                }
+                elements.add(
+                    EpubElement.TextBlock(
+                        blockIdCounter++,
+                        rawText.subSequence(lastIndex, rangeStart),
+                        lastIndex
+                    )
+                )
             }
             elements.add(EpubElement.ImageBlock(match.groupValues[1], blockIdCounter++))
             lastIndex = match.range.last + 1
         }
         if (lastIndex < textStr.length) {
-            val subText = rawText.subSequence(lastIndex, textStr.length)
-            if (subText.text.isNotBlank()) {
-                elements.add(EpubElement.TextBlock(blockIdCounter++, subText, lastIndex))
-            }
+            elements.add(
+                EpubElement.TextBlock(
+                    blockIdCounter++,
+                    rawText.subSequence(lastIndex, textStr.length),
+                    lastIndex
+                )
+            )
         }
         elements
     }
@@ -157,15 +170,19 @@ private fun EpubPage(
         val map = mutableStateMapOf<Int, TextFieldValue>()
         pageElements.filterIsInstance<EpubElement.TextBlock>().forEach { element ->
             val builder = AnnotatedString.Builder(element.content)
-            val globalStart = element.globalStartIndex
-            val globalEnd = globalStart + element.content.length
+            val gStart = element.globalStartIndex
+            val gEnd = gStart + element.content.length
             pageNotes.forEach { note ->
                 val nStart = note.textRangeStart ?: 0
                 val nEnd = note.textRangeEnd ?: 0
-                val intersectStart = maxOf(globalStart, nStart)
-                val intersectEnd = minOf(globalEnd, nEnd)
+                val intersectStart = maxOf(gStart, nStart)
+                val intersectEnd = minOf(gEnd, nEnd)
                 if (intersectStart < intersectEnd) {
-                    builder.addStyle(SpanStyle(background = Color(0x66FFEB3B)), intersectStart - globalStart, intersectEnd - globalStart)
+                    builder.addStyle(
+                        SpanStyle(background = Color(0x66FFEB3B)),
+                        intersectStart - gStart,
+                        intersectEnd - gStart
+                    )
                 }
             }
             map[element.uid] = TextFieldValue(builder.toAnnotatedString())
@@ -174,7 +191,6 @@ private fun EpubPage(
     }
 
     var activeBlockId by remember { mutableStateOf<Int?>(null) }
-    val density = LocalDensity.current
 
     LaunchedEffect(globalTextSelection) {
         if (globalTextSelection == null) {
@@ -190,10 +206,10 @@ private fun EpubPage(
 
     val customToolbar = remember(activeBlockId) {
         CustomTextToolbar(
-            onShowMenu = { bid ->
+            onShowMenu = {
                 activeBlockId?.let { id ->
-                    val state = textStates[id]
-                    if (state != null && !state.selection.collapsed) {
+                    val state = textStates[id] ?: return@let
+                    if (!state.selection.collapsed) {
                         val txt = state.text.substring(state.selection.start, state.selection.end)
                         viewModel.setTextSelection(pageIndex, txt, state.selection)
                     }
@@ -206,7 +222,10 @@ private fun EpubPage(
 
     CompositionLocalProvider(
         LocalTextToolbar provides customToolbar,
-        LocalTextSelectionColors provides TextSelectionColors(handleColor = Color(0xFF2196F3), backgroundColor = Color(0x662196F3))
+        LocalTextSelectionColors provides TextSelectionColors(
+            handleColor = Color(0xFF2196F3),
+            backgroundColor = Color(0x662196F3)
+        )
     ) {
         Column(
             modifier = Modifier
@@ -218,47 +237,64 @@ private fun EpubPage(
             pageElements.forEach { element ->
                 when (element) {
                     is EpubElement.TextBlock -> {
-                        var layoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+                        BasicTextField(
+                            value = textStates[element.uid] ?: TextFieldValue(),
+                            onValueChange = { newValue ->
+                                textStates[element.uid] = newValue
 
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            BasicTextField(
-                                value = textStates[element.uid] ?: TextFieldValue(),
-                                onValueChange = { newValue ->
-                                    textStates[element.uid] = newValue
-                                    if (!newValue.selection.collapsed) {
-                                        if (activeBlockId != element.uid) {
-                                            activeBlockId?.let { id -> textStates[id] = textStates[id]?.copy(selection = TextRange.Zero) ?: TextFieldValue() }
-                                            activeBlockId = element.uid
+                                if (!newValue.selection.collapsed) {
+                                    if (activeBlockId != element.uid) {
+                                        activeBlockId?.let { oldId ->
+                                            textStates[oldId] =
+                                                textStates[oldId]?.copy(selection = TextRange.Zero)
+                                                    ?: TextFieldValue()
                                         }
-                                        val txt = newValue.text.substring(newValue.selection.start, newValue.selection.end)
-                                        viewModel.setTextSelection(pageIndex, txt, newValue.selection)
-                                    } else if (activeBlockId == element.uid) {
-                                        viewModel.clearAllSelection()
+                                        activeBlockId = element.uid
                                     }
-                                },
-                                readOnly = true,
-                                textStyle = TextStyle(fontSize = fontSize.sp, lineHeight = (fontSize * 1.5).sp, color = if (isNightMode) Color(0xFFD0D0D0) else Color.Black, textAlign = TextAlign.Justify, fontFamily = androidx.compose.ui.text.font.FontFamily.Serif),
-                                modifier = Modifier.fillMaxWidth(),
-                                onTextLayout = { layoutResult = it }
-                            )
+                                    val txt = newValue.text.substring(
+                                        newValue.selection.start,
+                                        newValue.selection.end
+                                    )
+                                    viewModel.setTextSelection(pageIndex, txt, newValue.selection)
+                                } else {
+                                    val localCursor = newValue.selection.start
+                                    val globalCursor = localCursor + element.globalStartIndex
 
-                            layoutResult?.let { res ->
-                                pageNotes.forEach { note ->
-                                    val localStart = (note.textRangeStart ?: 0) - element.globalStartIndex
-                                    if (localStart >= 0 && localStart < element.content.length && localStart < res.layoutInput.text.length) {
-                                        val bounds = res.getBoundingBox(localStart)
-                                        val iconX = bounds.left
-                                        val iconY = bounds.top - 24.dp.toPx(density)
-                                        NoteIcon(iconX, iconY, 24.dp) { onNoteClick(note.noteContent) }
+                                    val hitNote = pageNotes.find { note ->
+                                        globalCursor in (note.textRangeStart
+                                            ?: -1) until (note.textRangeEnd ?: -1)
+                                    }
+
+                                    if (hitNote != null) {
+                                        onNoteClick(hitNote.noteContent)
+                                        viewModel.clearAllSelection()
+                                    } else {
+                                        if (activeBlockId == element.uid) viewModel.clearAllSelection()
                                     }
                                 }
-                            }
-                        }
+                            },
+                            readOnly = true,
+                            textStyle = TextStyle(
+                                fontSize = fontSize.sp,
+                                lineHeight = (fontSize * 1.5).sp,
+                                color = if (isNightMode) Color(0xFFD0D0D0) else Color.Black,
+                                textAlign = TextAlign.Justify,
+                                fontFamily = FontFamily.Serif
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
+
                     is EpubElement.ImageBlock -> {
                         epubImages[element.path]?.let {
-                            Image(bitmap = it.asImageBitmap(), contentDescription = null, contentScale = ContentScale.Fit,
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp))
+                            Image(
+                                bitmap = it.asImageBitmap(),
+                                contentDescription = null,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 12.dp)
+                            )
                         }
                     }
                 }
@@ -297,27 +333,7 @@ private fun PdfTextPage(
         }
     }
 
-    val customToolbar = remember {
-        CustomTextToolbar(
-            onShowMenu = {
-                val sel = textFieldValue.selection
-                if (!sel.collapsed && textContent != null) {
-                    try {
-                        val selectedText = textContent!!.substring(sel.start, sel.end)
-                        viewModel.setTextSelection(pageIndex, selectedText, sel)
-                    } catch (_: Exception) {
-                    }
-                }
-            },
-            onHideMenu = {
-//                viewModel.clearAllSelection()
-            },
-            onCopy = {}
-        )
-    }
-
     CompositionLocalProvider(
-        LocalTextToolbar provides customToolbar,
         LocalTextSelectionColors provides TextSelectionColors(
             handleColor = Color(0xFF2196F3),
             backgroundColor = Color(0x662196F3)
@@ -326,60 +342,42 @@ private fun PdfTextPage(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 24.dp)
-                .pointerInput(Unit) {
-                    detectTapGestures {
-                        viewModel.clearAllSelection()
-                    }
-                }
+                .padding(16.dp)
                 .then(if (!isVerticalMode) Modifier.verticalScroll(rememberScrollState()) else Modifier)
         ) {
-            if (textContent == null) {
-                Box(Modifier
-                    .fillMaxWidth()
-                    .height(400.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            } else {
+            if (textContent == null) CircularProgressIndicator(Modifier.align(Alignment.Center))
+            else {
                 BasicTextField(
                     value = textFieldValue,
                     onValueChange = {
                         if (it.text == textFieldValue.text) {
                             textFieldValue = it
                             if (it.selection.collapsed) {
+                                layoutResult?.let { res ->
+                                    val charIndex = it.selection.start
+                                    val note = pageNotes.find { n ->
+                                        charIndex in (n.textRangeStart ?: -1)..(n.textRangeEnd
+                                            ?: -1)
+                                    }
+                                    if (note != null) onNoteClick(note.noteContent)
+                                }
                                 viewModel.clearAllSelection()
+                            } else {
+                                val txt = it.text.substring(it.selection.start, it.selection.end)
+                                viewModel.setTextSelection(pageIndex, txt, it.selection)
                             }
                         }
-                    }, readOnly = true,
+                    },
+                    readOnly = true,
                     textStyle = TextStyle(
                         fontSize = fontSize.sp,
                         lineHeight = (fontSize * 1.5).sp,
                         color = if (isNightMode) Color.LightGray else Color.Black,
                         textAlign = TextAlign.Justify
                     ),
-                    modifier = Modifier
-                        .fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth(),
                     onTextLayout = { layoutResult = it }
                 )
-
-                if (layoutResult != null) {
-                    val textLen = layoutResult!!.layoutInput.text.text.length
-
-                    pageNotes.forEach { note ->
-                        note.textRangeStart?.let { start ->
-                            if (textLen > 0 && start < textLen) {
-                                val bounds = layoutResult!!.getBoundingBox(start)
-                                val iconX = bounds.left
-                                val iconY = bounds.top - 24.dp.toPx(LocalDensity.current)
-                                NoteIcon(
-                                    iconX,
-                                    iconY,
-                                    24.dp,
-                                    onClick = { onNoteClick(note.noteContent) })
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -398,21 +396,16 @@ private fun PdfImagePage(
         value = viewModel.renderPage(pageIndex)
     }
 
+    val selectionState by viewModel.selectionState.collectAsStateWithLifecycle()
+
     val noteRectsMap by produceState<Map<Long, List<NormRect>>>(
         initialValue = emptyMap(),
         key1 = pageNotes
     ) {
-        val newMap = withContext(Dispatchers.Default) {
-            val map = mutableMapOf<Long, List<NormRect>>()
-            pageNotes.forEach { note ->
-                map[note.id] = viewModel.getRectsForNote(note)
-            }
-            map
-        }
-        value = newMap
+        val map = mutableMapOf<Long, List<NormRect>>()
+        pageNotes.forEach { map[it.id] = viewModel.getRectsForNote(it) }
+        value = map
     }
-
-    val selectionState by viewModel.selectionState.collectAsStateWithLifecycle()
 
     if (bitmap == null) {
         Box(Modifier
@@ -424,13 +417,12 @@ private fun PdfImagePage(
     }
 
     val currentBitmap = bitmap!!
-    val pdfAspectRatio = currentBitmap.width.toFloat() / currentBitmap.height.toFloat()
     var layoutSize by remember { mutableStateOf(Size.Zero) }
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(pdfAspectRatio)
+            .aspectRatio(currentBitmap.width.toFloat() / currentBitmap.height.toFloat())
             .background(if (isNightMode) Color.Black else Color.White)
             .onGloballyPositioned { layoutSize = it.size.toSize() }
             .pointerInput(pageIndex) {
@@ -452,7 +444,25 @@ private fun PdfImagePage(
                         viewModel.onDragEnd()
                     } else {
                         try {
-                            withTimeout(500) { waitForUpOrCancellation() }
+                            withTimeout(500) {
+                                val up = waitForUpOrCancellation()
+                                if (up != null) {
+                                    val nx = up.position.x / layoutSize.width
+                                    val ny = up.position.y / layoutSize.height
+
+                                    val note = pageNotes.find { n ->
+                                        noteRectsMap[n.id]?.any { r ->
+                                            nx in r.left..r.right && ny in r.top..r.bottom
+                                        } == true
+                                    }
+
+                                    if (note != null) {
+                                        onNoteClick(note.noteContent)
+                                    } else {
+                                        viewModel.clearAllSelection()
+                                    }
+                                }
+                            }
                         } catch (e: PointerEventTimeoutCancellationException) {
                             viewModel.onLongPress(pageIndex, down.position, layoutSize)
                             val dragPointerId = down.id
@@ -479,42 +489,36 @@ private fun PdfImagePage(
                 val h = size.height
 
                 pageNotes.forEach { note ->
-                    val rects = noteRectsMap[note.id] ?: emptyList()
-                    rects.forEach { rect ->
+                    noteRectsMap[note.id]?.forEach { r ->
                         drawRect(
-                            color = Color(0x66FFEB3B),
-                            topLeft = Offset(rect.left * w, rect.top * h),
-                            size = Size((rect.right - rect.left) * w, (rect.bottom - rect.top) * h)
+                            Color(0x66FFEB3B),
+                            Offset(r.left * w, r.top * h),
+                            Size((r.right - r.left) * w, (r.bottom - r.top) * h)
                         )
                     }
                 }
 
                 val sel = selectionState
                 if (sel?.pageIndex == pageIndex) {
-                    val rects = sel.rects
-                    rects.forEach { rect ->
+                    sel.rects.forEach { r ->
                         drawRect(
-                            color = Color(0x4D2196F3),
-                            topLeft = Offset(rect.left * w, rect.top * h),
-                            size = Size((rect.right - rect.left) * w, (rect.bottom - rect.top) * h)
+                            Color(0x4D2196F3),
+                            Offset(r.left * w, r.top * h),
+                            Size((r.right - r.left) * w, (r.bottom - r.top) * h)
                         )
                     }
-                    if (rects.isNotEmpty()) {
-                        val sortedRects = rects.sortedBy { it.top }
-                        val first = sortedRects.first()
-                        val last = sortedRects.last()
-                        val baseRadius = 9.dp.toPx()
-                        val scaledRadius = baseRadius / currentZoom
-
+                    if (sel.rects.isNotEmpty()) {
+                        val sorted = sel.rects.sortedBy { it.top }
+                        val scaledRadius = 9.dp.toPx() / currentZoom
                         drawAndroidSelectionHandle(
-                            first.left * w,
-                            first.bottom * h,
+                            sorted.first().left * w,
+                            sorted.first().bottom * h,
                             scaledRadius,
                             true
                         )
                         drawAndroidSelectionHandle(
-                            last.right * w,
-                            last.bottom * h,
+                            sorted.last().right * w,
+                            sorted.last().bottom * h,
                             scaledRadius,
                             false
                         )
@@ -530,40 +534,32 @@ private fun PdfImagePage(
             colorFilter = if (isNightMode) ColorFilter.colorMatrix(
                 ColorMatrix(
                     floatArrayOf(
-                        -1f, 0f, 0f, 0f, 255f,
-                        0f, -1f, 0f, 0f, 255f,
-                        0f, 0f, -1f, 0f, 255f,
-                        0f, 0f, 0f, 1f, 0f
+                        -1f,
+                        0f,
+                        0f,
+                        0f,
+                        255f,
+                        0f,
+                        -1f,
+                        0f,
+                        0f,
+                        255f,
+                        0f,
+                        0f,
+                        -1f,
+                        0f,
+                        255f,
+                        0f,
+                        0f,
+                        0f,
+                        1f,
+                        0f
                     )
                 )
             ) else null
         )
-
-        if (layoutSize != Size.Zero) {
-            pageNotes.forEach { note ->
-                val rects = noteRectsMap[note.id] ?: emptyList()
-                val first = rects.firstOrNull()
-                if (first != null) {
-                    val iconX = first.left * layoutSize.width
-                    val baseSize = 24.dp
-                    val scaledSize = baseSize / currentZoom
-                    val padding = 2.dp / currentZoom
-                    val iconY =
-                        (first.top * layoutSize.height) - scaledSize.toPx(LocalDensity.current) - padding.toPx(
-                            LocalDensity.current
-                        )
-                    NoteIcon(
-                        iconX,
-                        iconY,
-                        scaledSize,
-                        4.dp / currentZoom
-                    ) { onNoteClick(note.noteContent) }
-                }
-            }
-        }
     }
 }
-
 
 fun DrawScope.drawAndroidSelectionHandle(
     x: Float,
