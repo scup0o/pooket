@@ -2,9 +2,7 @@ package com.project.pooket.ui.reader
 
 import androidx.compose.animation.*
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -23,11 +21,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.changedToDown
-import androidx.compose.ui.input.pointer.changedToUp
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
@@ -295,20 +289,55 @@ fun ReaderScreen(
                             // zoom_gesture
                             .pointerInput(isVerticalMode, isTextMode, isViewportLocked) {
                                 if (isTextMode) return@pointerInput
-                                detectTransformGestures { _, pan, zoom, _ ->
-                                    val newScale = (globalScale * zoom).coerceIn(1f, 5f)
-                                    val effectivePan =
-                                        if (isViewportLocked) Offset(0f, pan.y) else pan
-                                    val proposedOffset = globalOffset + effectivePan
+                                awaitEachGesture {
+                                    var pan = Offset.Zero
+                                    var zoom = 1f
+                                    var pastTouchSlop = false
+                                    val touchSlop = viewConfiguration.touchSlop
 
-                                    val clampedOffset = clampOffset(proposedOffset, newScale, size.toSize())
+                                    awaitFirstDown(requireUnconsumed = false)
+                                    do {
+                                        val event = awaitPointerEvent()
+                                        val canceled = event.changes.any { it.isConsumed }
+                                        if (!canceled) {
+                                            val zoomChange = event.calculateZoom()
+                                            val panChange = event.calculatePan()
 
-                                    globalScale = newScale
-                                    globalOffset = clampedOffset
+                                            if (!pastTouchSlop) {
+                                                zoom *= zoomChange
+                                                pan += panChange
+                                                val centroidSize = event.calculateCentroidSize(useCurrent = false)
+                                                val panMotion = pan.getDistance()
+                                                if (panMotion > touchSlop ||
+                                                    abs(1f - zoom) * centroidSize > touchSlop
+                                                ) {
+                                                    pastTouchSlop = true
+                                                }
+                                            }
 
-                                    if (isVerticalMode && (proposedOffset.y - clampedOffset.y) != 0f) {
-                                        listState.dispatchRawDelta(-(proposedOffset.y - clampedOffset.y))
-                                    }
+                                            if (pastTouchSlop) {
+                                                val newScale = (globalScale * zoomChange).coerceIn(1f, 5f)
+                                                val effectivePan = if (isViewportLocked) Offset(0f, panChange.y) else panChange
+
+                                                if (isViewportLocked && event.changes.size == 1) {
+                                                    val change = event.changes[0]
+                                                    if (abs(panChange.y) > 0.1f) change.consume()
+                                                } else {
+                                                    event.changes.forEach { it.consume() }
+                                                }
+
+                                                val proposedOffset = globalOffset + effectivePan
+                                                val clampedOffset = clampOffset(proposedOffset, newScale, size.toSize())
+
+                                                globalScale = newScale
+                                                globalOffset = clampedOffset
+
+                                                if (isVerticalMode && (proposedOffset.y - clampedOffset.y) != 0f) {
+                                                    listState.dispatchRawDelta(-(proposedOffset.y - clampedOffset.y))
+                                                }
+                                            }
+                                        }
+                                    } while (!canceled && event.changes.any { it.pressed })
                                 }
                             }
                             .graphicsLayer {
@@ -343,7 +372,7 @@ fun ReaderScreen(
                         } else {
                             HorizontalPager(
                                 state = pagerState,
-                                userScrollEnabled = (isTextMode || globalScale <= 1.01f) && !isViewportLocked,
+                                userScrollEnabled = isTextMode || globalScale <= 1.01f || isViewportLocked,
                                 beyondViewportPageCount = 1
                             ) { index -> pageContent(index) }
                         }
