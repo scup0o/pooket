@@ -33,32 +33,6 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
 @Composable
-fun NoteIcon(x: Float, y: Float, size: Dp, iconPadding: Dp = 4.dp, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .offset { IntOffset(x.toInt(), y.toInt()) }
-            .size(size)
-            .shadow(1.dp, CircleShape)
-            .background(Color.White, CircleShape)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClick
-            )
-    ) {
-        Icon(
-            imageVector = Icons.Default.Comment,
-            contentDescription = "Note",
-            tint = Color(0xFFFFC107),
-            modifier = Modifier
-                .padding(iconPadding)
-                .fillMaxSize()
-        )
-    }
-}
-
-
-@Composable
 fun NoteContentDialog(content: String, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,

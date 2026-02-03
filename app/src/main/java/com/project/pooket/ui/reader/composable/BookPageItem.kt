@@ -66,7 +66,7 @@ fun BookPageItem(
     isTextMode: Boolean,
     isEpub: Boolean,
     fontSize: Float,
-    currentZoom: Float,
+    currentZoom: () -> Float,
     pageNotes: List<NoteEntity>,
 ) {
     var clickedNoteContent by remember { mutableStateOf<String?>(null) }
@@ -459,7 +459,7 @@ private fun PdfImagePage(
     pageIndex: Int,
     viewModel: ReaderViewModel,
     isNightMode: Boolean,
-    currentZoom: Float,
+    currentZoom: () -> Float,
     pageNotes: List<NoteEntity>,
     onNoteClick: (String) -> Unit
 ) {
@@ -567,6 +567,8 @@ private fun PdfImagePage(
                 val w = size.width
                 val h = size.height
 
+                val zoom = currentZoom()
+
                 noteRectsMap.forEach { (_, rects) ->
                     rects.forEach { r ->
                         drawRect(
@@ -588,7 +590,7 @@ private fun PdfImagePage(
                     }
                     if (sel.rects.isNotEmpty()) {
                         val sorted = sel.rects.sortedBy { it.top }
-                        val scaledRadius = 9.dp.toPx() / currentZoom
+                        val scaledRadius = 9.dp.toPx() / zoom
                         drawAndroidSelectionHandle(
                             sorted.first().left * w,
                             sorted.first().bottom * h,

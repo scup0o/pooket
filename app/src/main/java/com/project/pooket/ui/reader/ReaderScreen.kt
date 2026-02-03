@@ -2,6 +2,7 @@ package com.project.pooket.ui.reader
 
 import androidx.compose.animation.*
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -22,21 +23,38 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToDown
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.toSize
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.project.pooket.ui.reader.composable.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 private val NoJumpSpec = object : androidx.compose.foundation.gestures.BringIntoViewSpec {
     override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float =
         0f
+}
+
+//screen-locking (disable horizontal drag)
+private fun clampOffset(proposedOffset: Offset, scale: Float, size: Size): Offset {
+    val maxX = (size.width * scale - size.width) / 2f
+    val maxY = (size.height * scale - size.height) / 2f
+    return Offset(
+        proposedOffset.x.coerceIn(-maxX, maxX),
+        proposedOffset.y.coerceIn(-maxY, maxY)
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -65,6 +83,8 @@ fun ReaderScreen(
     val initialPage by viewModel.initialPage.collectAsStateWithLifecycle()
     val selectedText by viewModel.currentSelectionText.collectAsStateWithLifecycle()
     val notes by viewModel.notes.collectAsStateWithLifecycle()
+
+    val notesByPage = remember(notes) { notes.groupBy { it.pageIndex } }
 
     //ui-state
     var masterPage by remember { mutableIntStateOf(0) }
@@ -140,16 +160,6 @@ fun ReaderScreen(
         }
     }
 
-    //screen-locking (disable horizontal drag)
-    fun clampOffset(proposedOffset: Offset, scale: Float, size: Size): Offset {
-        val maxX = (size.width * scale - size.width) / 2f
-        val maxY = (size.height * scale - size.height) / 2f
-        return Offset(
-            proposedOffset.x.coerceIn(-maxX, maxX),
-            proposedOffset.y.coerceIn(-maxY, maxY)
-        )
-    }
-
     //switch page
     val onNextPageAction: () -> Unit = {
         scope.launch {
@@ -199,21 +209,18 @@ fun ReaderScreen(
         floatingActionButtonPosition = FabPosition.Center
     ) { innerPadding ->
         CompositionLocalProvider(androidx.compose.foundation.gestures.LocalBringIntoViewSpec provides NoJumpSpec) {
-            BoxWithConstraints(
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
                     .clipToBounds()
-            ) {
-                val constraints = this.constraints
-                LaunchedEffect(constraints.maxWidth, constraints.maxHeight, density) {
-                    if (constraints.maxWidth > 0 && constraints.maxHeight > 0) {
-                        viewModel.onScreenSizeReady(
-                            Size(constraints.maxWidth.toFloat(), constraints.maxHeight.toFloat()),
-                            density
-                        )
+                    .onGloballyPositioned { coordinates ->
+                        val size = coordinates.size.toSize()
+                        if (size.width > 0) {
+                            viewModel.onScreenSizeReady(size, density)
+                        }
                     }
-                }
+            ) {
 
                 if (isLoading || totalPages == 0) {
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
@@ -221,17 +228,58 @@ fun ReaderScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
+                            //tap top to show menu gesture
+                            .pointerInput(Unit) {
+                                val topZonePx = 80.dp.toPx()
+                                val touchSlop = viewConfiguration.touchSlop
+
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        val downEvent = awaitPointerEvent(PointerEventPass.Initial)
+                                        val downChange = downEvent.changes.find { it.changedToDown() }
+
+                                        if (downChange != null && downChange.position.y <= topZonePx) {
+                                            val startPos = downChange.position
+                                            var isTap = true
+
+                                            do {
+                                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                val change = event.changes.find { it.id == downChange.id }
+
+                                                if (change == null) {
+                                                    isTap = false; break
+                                                }
+
+                                                if (change.positionChanged()) {
+                                                    val distance = (change.position - startPos).getDistance()
+                                                    if (distance > touchSlop) {
+                                                        isTap = false
+                                                    }
+                                                }
+
+                                                if (change.changedToUp()) {
+                                                    if (isTap && !showControls) {
+                                                        showControls = true
+                                                    }
+                                                    break
+                                                }
+                                            } while (change.pressed && !change.isConsumed)
+                                        }
+                                    }
+                                }
+                            }
+                            // tap_gesture
                             .pointerInput(isVerticalMode, isTextMode) {
                                 if (isTextMode) {
                                     detectTapGestures(onTap = {
                                         viewModel.clearAllSelection()
-//                                        showControls = !showControls
+                                        // showControls = !showControls
                                     })
                                 } else {
                                     detectTapGestures(
                                         onTap = {
-                                            viewModel.clearAllSelection();
-//                                            showControls = !showControls
+                                            viewModel.clearAllSelection()
+                                            // showControls = !showControls
                                         },
                                         onDoubleTap = {
                                             if (globalScale > 1f) {
@@ -244,6 +292,7 @@ fun ReaderScreen(
                                     )
                                 }
                             }
+                            // zoom_gesture
                             .pointerInput(isVerticalMode, isTextMode, isViewportLocked) {
                                 if (isTextMode) return@pointerInput
                                 detectTransformGestures { _, pan, zoom, _ ->
@@ -252,19 +301,13 @@ fun ReaderScreen(
                                         if (isViewportLocked) Offset(0f, pan.y) else pan
                                     val proposedOffset = globalOffset + effectivePan
 
-                                    val currentSize = Size(
-                                        constraints.maxWidth.toFloat(),
-                                        constraints.maxHeight.toFloat()
-                                    )
-                                    val clampedOffset =
-                                        clampOffset(proposedOffset, newScale, currentSize)
+                                    val clampedOffset = clampOffset(proposedOffset, newScale, size.toSize())
 
                                     globalScale = newScale
                                     globalOffset = clampedOffset
 
-                                    val overflowY = proposedOffset.y - clampedOffset.y
-                                    if (isVerticalMode && overflowY != 0f) {
-                                        listState.dispatchRawDelta(-overflowY)
+                                    if (isVerticalMode && (proposedOffset.y - clampedOffset.y) != 0f) {
+                                        listState.dispatchRawDelta(-(proposedOffset.y - clampedOffset.y))
                                     }
                                 }
                             }
@@ -275,48 +318,34 @@ fun ReaderScreen(
                                 translationY = if (isTextMode) 0f else globalOffset.y
                             }
                     ) {
+                        val pageContent: @Composable (Int) -> Unit = { index ->
+                            BookPageItem(
+                                pageIndex = index,
+                                viewModel = viewModel,
+                                isVerticalMode = isVerticalMode,
+                                isNightMode = isNightMode,
+                                isTextMode = isTextMode,
+                                isEpub = isEpub,
+                                fontSize = fontSize,
+                                currentZoom = { globalScale },
+                                pageNotes = notesByPage[index] ?: emptyList()
+                            )
+                        }
+
                         if (isVerticalMode) {
                             LazyColumn(
                                 state = listState,
                                 modifier = Modifier.fillMaxSize(),
                                 userScrollEnabled = isTextMode || globalScale <= 1.01f
                             ) {
-                                items(count = totalPages, key = { it }) { index ->
-                                    val pageNotes =
-                                        remember(notes) { notes.filter { it.pageIndex == index } }
-                                    BookPageItem(
-                                        pageIndex = index,
-                                        viewModel = viewModel,
-                                        isVerticalMode = true,
-                                        isNightMode = isNightMode,
-                                        isTextMode = isTextMode,
-                                        isEpub = isEpub,
-                                        fontSize = fontSize,
-                                        currentZoom = globalScale,
-                                        pageNotes = pageNotes
-                                    )
-                                }
+                                items(count = totalPages, key = { it }) { index -> pageContent(index) }
                             }
                         } else {
                             HorizontalPager(
                                 state = pagerState,
                                 userScrollEnabled = (isTextMode || globalScale <= 1.01f) && !isViewportLocked,
                                 beyondViewportPageCount = 1
-                            ) { index ->
-                                val pageNotes =
-                                    remember(notes) { notes.filter { it.pageIndex == index } }
-                                BookPageItem(
-                                    pageIndex = index,
-                                    viewModel = viewModel,
-                                    isVerticalMode = false,
-                                    isNightMode = isNightMode,
-                                    isTextMode = isTextMode,
-                                    isEpub = isEpub,
-                                    fontSize = fontSize,
-                                    currentZoom = globalScale,
-                                    pageNotes = pageNotes
-                                )
-                            }
+                            ) { index -> pageContent(index) }
                         }
                     }
                     MenuController(
