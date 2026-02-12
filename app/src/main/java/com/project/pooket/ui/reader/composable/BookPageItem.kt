@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.text.AnnotatedString
@@ -49,12 +50,31 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
-// Define EpubElement outside or at the top level
+private val EPUB_IMAGE_REGEX = "\\[IMAGE:(.*?)\\]".toRegex()
+
 private sealed class EpubElement(val id: String) {
     data class TextBlock(val uid: Int, val content: AnnotatedString, val globalStartIndex: Int) :
         EpubElement("text_$uid")
 
     data class ImageBlock(val path: String, val uid: Int) : EpubElement("img_${path}_$uid")
+}
+
+private object PageContentCache {
+    private data class Key(val vmId: Int, val pageIndex: Int, val fontSize: Float)
+
+    private val cache = object : LinkedHashMap<Key, AnnotatedString>(20, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Key, AnnotatedString>): Boolean {
+            return size > 20
+        }
+    }
+
+    fun get(vm: ReaderViewModel, pageIndex: Int, fontSize: Float): AnnotatedString? = synchronized(cache) {
+        cache[Key(System.identityHashCode(vm), pageIndex, fontSize)]
+    }
+
+    fun put(vm: ReaderViewModel, pageIndex: Int, fontSize: Float, content: AnnotatedString) = synchronized(cache) {
+        cache[Key(System.identityHashCode(vm), pageIndex, fontSize)] = content
+    }
 }
 
 @Composable
@@ -119,19 +139,29 @@ private fun EpubPage(
     pageNotes: List<NoteEntity>,
     onNoteClick: (String) -> Unit
 ) {
-    val pageContent by produceState<AnnotatedString?>(
-        initialValue = null,
-        key1 = pageIndex,
-        key2 = fontSize
-    ) {
-        value = viewModel.getEpubPageContent(pageIndex)
+    // 1. Try to get content from Cache immediately (Synchronous)
+    var pageContent by remember(pageIndex, fontSize) {
+        mutableStateOf(PageContentCache.get(viewModel, pageIndex, fontSize))
+    }
+
+    // 2. If not in cache, fetch asynchronously
+    LaunchedEffect(pageIndex, fontSize) {
+        if (pageContent == null) {
+            val content = viewModel.getEpubPageContent(pageIndex)
+            if (content != null) {
+                PageContentCache.put(viewModel, pageIndex, fontSize, content)
+                pageContent = content
+            }
+        }
     }
 
     val epubImages by viewModel.epubImages.collectAsStateWithLifecycle(initialValue = emptyMap())
     val globalTextSelection by viewModel.textSelection.collectAsStateWithLifecycle()
 
     if (pageContent == null) {
-        Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
+        // Use Screen Height estimate to minimize jump if cache misses
+        val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+        Box(Modifier.fillMaxWidth().height(screenHeight - 50.dp), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
         }
         return
@@ -139,71 +169,68 @@ private fun EpubPage(
 
     val rawText = pageContent!!
 
-    val processedData by produceState<Pair<List<EpubElement>, Map<Int, TextFieldValue>>>(
-        initialValue = Pair(emptyList(), emptyMap()),
-        key1 = rawText,
-        key2 = pageNotes
-    ) {
-        withContext(Dispatchers.Default) {
-            val elements = mutableListOf<EpubElement>()
-            val textStr = rawText.text
-            val imageRegex = "\\[IMAGE:(.*?)\\]".toRegex()
-            var lastIndex = 0
-            var blockIdCounter = 0
+    // 3. Process elements Synchronously using remember (prevents the 0-height frame)
+    val processedData = remember(rawText, pageNotes) {
+        val elements = mutableListOf<EpubElement>()
+        val textStr = rawText.text
+        val imageRegex = "\\[IMAGE:(.*?)\\]".toRegex()
+        var lastIndex = 0
+        var blockIdCounter = 0
 
-            imageRegex.findAll(textStr).forEach { match ->
-                val rangeStart = match.range.first
-                if (rangeStart > lastIndex) {
-                    elements.add(
-                        EpubElement.TextBlock(
-                            blockIdCounter++,
-                            rawText.subSequence(lastIndex, rangeStart),
-                            lastIndex
-                        )
-                    )
-                }
-                elements.add(EpubElement.ImageBlock(match.groupValues[1], blockIdCounter++))
-                lastIndex = match.range.last + 1
-            }
-            if (lastIndex < textStr.length) {
+        imageRegex.findAll(textStr).forEach { match ->
+            val rangeStart = match.range.first
+            if (rangeStart > lastIndex) {
                 elements.add(
                     EpubElement.TextBlock(
                         blockIdCounter++,
-                        rawText.subSequence(lastIndex, textStr.length),
+                        rawText.subSequence(lastIndex, rangeStart),
                         lastIndex
                     )
                 )
             }
-
-            val map = mutableMapOf<Int, TextFieldValue>()
-            elements.filterIsInstance<EpubElement.TextBlock>().forEach { element ->
-                val builder = AnnotatedString.Builder(element.content)
-                val gStart = element.globalStartIndex
-                val gEnd = gStart + element.content.length
-
-                for (note in pageNotes) {
-                    val nStart = note.textRangeStart ?: 0
-                    val nEnd = note.textRangeEnd ?: 0
-                    if (nEnd <= gStart || nStart >= gEnd) continue
-
-                    val intersectStart = maxOf(gStart, nStart)
-                    val intersectEnd = minOf(gEnd, nEnd)
-                    if (intersectStart < intersectEnd) {
-                        builder.addStyle(
-                            SpanStyle(background = Color(0x66FFEB3B)),
-                            intersectStart - gStart,
-                            intersectEnd - gStart
-                        )
-                    }
-                }
-                map[element.uid] = TextFieldValue(builder.toAnnotatedString())
-            }
-            value = Pair(elements, map)
+            elements.add(EpubElement.ImageBlock(match.groupValues[1], blockIdCounter++))
+            lastIndex = match.range.last + 1
         }
+        if (lastIndex < textStr.length) {
+            elements.add(
+                EpubElement.TextBlock(
+                    blockIdCounter++,
+                    rawText.subSequence(lastIndex, textStr.length),
+                    lastIndex
+                )
+            )
+        }
+
+        val map = mutableMapOf<Int, TextFieldValue>()
+        elements.filterIsInstance<EpubElement.TextBlock>().forEach { element ->
+            val builder = AnnotatedString.Builder(element.content)
+            val gStart = element.globalStartIndex
+            val gEnd = gStart + element.content.length
+
+            for (note in pageNotes) {
+                val nStart = note.textRangeStart ?: 0
+                val nEnd = note.textRangeEnd ?: 0
+                if (nEnd <= gStart || nStart >= gEnd) continue
+
+                val intersectStart = maxOf(gStart, nStart)
+                val intersectEnd = minOf(gEnd, nEnd)
+                if (intersectStart < intersectEnd) {
+                    builder.addStyle(
+                        SpanStyle(background = Color(0x66FFEB3B)),
+                        intersectStart - gStart,
+                        intersectEnd - gStart
+                    )
+                }
+            }
+            map[element.uid] = TextFieldValue(builder.toAnnotatedString())
+        }
+        Pair(elements, map)
     }
 
     val pageElements = processedData.first
-    val textStates = remember(processedData.second) { mutableStateMapOf<Int, TextFieldValue>().apply { putAll(processedData.second) } }
+    val textStates = remember(processedData.second) {
+        mutableStateMapOf<Int, TextFieldValue>().apply { putAll(processedData.second) }
+    }
 
     var activeBlockId by remember { mutableStateOf<Int?>(null) }
 
