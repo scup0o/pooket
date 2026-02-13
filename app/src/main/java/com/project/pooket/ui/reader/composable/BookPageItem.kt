@@ -59,21 +59,24 @@ private sealed class EpubElement(val id: String) {
     data class ImageBlock(val path: String, val uid: Int) : EpubElement("img_${path}_$uid")
 }
 
+private data class ProcessedEpubPage(
+    val elements: List<EpubElement>,
+    val textStates: Map<Int, TextFieldValue>
+)
+
 private object PageContentCache {
-    private data class Key(val vmId: Int, val pageIndex: Int, val fontSize: Float)
+    private data class Key(val vmHash: Int, val pageIndex: Int, val fontSize: Float, val notesHash: Int)
 
-    private val cache = object : LinkedHashMap<Key, AnnotatedString>(20, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Key, AnnotatedString>): Boolean {
-            return size > 20
-        }
+    private val cache = object : LinkedHashMap<Key, ProcessedEpubPage>(15, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Key, ProcessedEpubPage>) = size > 15
     }
 
-    fun get(vm: ReaderViewModel, pageIndex: Int, fontSize: Float): AnnotatedString? = synchronized(cache) {
-        cache[Key(System.identityHashCode(vm), pageIndex, fontSize)]
+    fun get(vm: ReaderViewModel, pageIndex: Int, fontSize: Float, notes: List<NoteEntity>): ProcessedEpubPage? = synchronized(cache) {
+        cache[Key(System.identityHashCode(vm), pageIndex, fontSize, notes.hashCode())]
     }
 
-    fun put(vm: ReaderViewModel, pageIndex: Int, fontSize: Float, content: AnnotatedString) = synchronized(cache) {
-        cache[Key(System.identityHashCode(vm), pageIndex, fontSize)] = content
+    fun put(vm: ReaderViewModel, pageIndex: Int, fontSize: Float, notes: List<NoteEntity>, data: ProcessedEpubPage) = synchronized(cache) {
+        cache[Key(System.identityHashCode(vm), pageIndex, fontSize, notes.hashCode())] = data
     }
 }
 
@@ -90,38 +93,14 @@ fun BookPageItem(
     pageNotes: List<NoteEntity>,
 ) {
     var clickedNoteContent by remember { mutableStateOf<String?>(null) }
-    // Memoize the callback to prevent unnecessary recompositions of children
     val onNoteClick: (String) -> Unit = remember { { clickedNoteContent = it } }
 
     if (isEpub) {
-        EpubPage(
-            pageIndex = pageIndex,
-            viewModel = viewModel,
-            isNightMode = isNightMode,
-            isVerticalMode = isVerticalMode,
-            fontSize = fontSize,
-            pageNotes = pageNotes,
-            onNoteClick = onNoteClick
-        )
+        EpubPage(pageIndex, viewModel, isNightMode, isVerticalMode, fontSize, pageNotes, onNoteClick)
     } else if (isTextMode) {
-        PdfTextPage(
-            pageIndex = pageIndex,
-            viewModel = viewModel,
-            isNightMode = isNightMode,
-            isVerticalMode = isVerticalMode,
-            fontSize = fontSize,
-            pageNotes = pageNotes,
-            onNoteClick = onNoteClick
-        )
+        PdfTextPage(pageIndex, viewModel, isNightMode, isVerticalMode, fontSize, pageNotes, onNoteClick)
     } else {
-        PdfImagePage(
-            pageIndex = pageIndex,
-            viewModel = viewModel,
-            isNightMode = isNightMode,
-            currentZoom = currentZoom,
-            pageNotes = pageNotes,
-            onNoteClick = onNoteClick
-        )
+        PdfImagePage(pageIndex, viewModel, isNightMode, currentZoom, pageNotes, onNoteClick)
     }
 
     if (clickedNoteContent != null) {
@@ -139,18 +118,60 @@ private fun EpubPage(
     pageNotes: List<NoteEntity>,
     onNoteClick: (String) -> Unit
 ) {
-    // 1. Try to get content from Cache immediately (Synchronous)
-    var pageContent by remember(pageIndex, fontSize) {
-        mutableStateOf(PageContentCache.get(viewModel, pageIndex, fontSize))
+    // State to hold the final rendered elements
+    var processedData by remember(pageIndex, fontSize, pageNotes) {
+        mutableStateOf(PageContentCache.get(viewModel, pageIndex, fontSize, pageNotes))
     }
 
-    // 2. If not in cache, fetch asynchronously
-    LaunchedEffect(pageIndex, fontSize) {
-        if (pageContent == null) {
-            val content = viewModel.getEpubPageContent(pageIndex)
-            if (content != null) {
-                PageContentCache.put(viewModel, pageIndex, fontSize, content)
-                pageContent = content
+    // Background Processing: Moves Regex and Styling off the UI thread
+    LaunchedEffect(pageIndex, fontSize, pageNotes) {
+        if (processedData == null) {
+            withContext(Dispatchers.Default) {
+                val rawText = viewModel.getEpubPageContent(pageIndex) ?: return@withContext
+
+                val elements = mutableListOf<EpubElement>()
+                val textStr = rawText.text
+                var lastIndex = 0
+                var blockIdCounter = 0
+
+                // 1. Regex Parsing (Background)
+                EPUB_IMAGE_REGEX.findAll(textStr).forEach { match ->
+                    val rangeStart = match.range.first
+                    if (rangeStart > lastIndex) {
+                        elements.add(EpubElement.TextBlock(blockIdCounter++, rawText.subSequence(lastIndex, rangeStart), lastIndex))
+                    }
+                    elements.add(EpubElement.ImageBlock(match.groupValues[1], blockIdCounter++))
+                    lastIndex = match.range.last + 1
+                }
+                if (lastIndex < textStr.length) {
+                    elements.add(EpubElement.TextBlock(blockIdCounter++, rawText.subSequence(lastIndex, textStr.length), lastIndex))
+                }
+
+                // 2. Highlighting/Styling (Background)
+                val statesMap = elements.filterIsInstance<EpubElement.TextBlock>().associate { element ->
+                    val builder = AnnotatedString.Builder(element.content)
+                    val gStart = element.globalStartIndex
+                    val gEnd = gStart + element.content.length
+
+                    for (note in pageNotes) {
+                        val nStart = note.textRangeStart ?: 0
+                        val nEnd = note.textRangeEnd ?: 0
+                        val intersectStart = maxOf(gStart, nStart)
+                        val intersectEnd = minOf(gEnd, nEnd)
+                        if (intersectStart < intersectEnd) {
+                            builder.addStyle(SpanStyle(background = Color(0x66FFEB3B)), intersectStart - gStart, intersectEnd - gStart)
+                        }
+                    }
+                    element.uid to TextFieldValue(builder.toAnnotatedString())
+                }
+
+                val result = ProcessedEpubPage(elements, statesMap)
+                PageContentCache.put(viewModel, pageIndex, fontSize, pageNotes, result)
+
+                // Back to Main thread to update UI
+                withContext(Dispatchers.Main) {
+                    processedData = result
+                }
             }
         }
     }
@@ -158,205 +179,93 @@ private fun EpubPage(
     val epubImages by viewModel.epubImages.collectAsStateWithLifecycle(initialValue = emptyMap())
     val globalTextSelection by viewModel.textSelection.collectAsStateWithLifecycle()
 
-    if (pageContent == null) {
-        // Use Screen Height estimate to minimize jump if cache misses
+    // Show a minimal placeholder while processing to keep the scroll smooth
+    if (processedData == null) {
         val screenHeight = LocalConfiguration.current.screenHeightDp.dp
-        Box(Modifier.fillMaxWidth().height(screenHeight - 50.dp), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator()
-        }
+        Box(Modifier.fillMaxWidth().height(screenHeight - 100.dp))
         return
     }
 
-    val rawText = pageContent!!
-
-    // 3. Process elements Synchronously using remember (prevents the 0-height frame)
-    val processedData = remember(rawText, pageNotes) {
-        val elements = mutableListOf<EpubElement>()
-        val textStr = rawText.text
-        val imageRegex = "\\[IMAGE:(.*?)\\]".toRegex()
-        var lastIndex = 0
-        var blockIdCounter = 0
-
-        imageRegex.findAll(textStr).forEach { match ->
-            val rangeStart = match.range.first
-            if (rangeStart > lastIndex) {
-                elements.add(
-                    EpubElement.TextBlock(
-                        blockIdCounter++,
-                        rawText.subSequence(lastIndex, rangeStart),
-                        lastIndex
-                    )
-                )
-            }
-            elements.add(EpubElement.ImageBlock(match.groupValues[1], blockIdCounter++))
-            lastIndex = match.range.last + 1
-        }
-        if (lastIndex < textStr.length) {
-            elements.add(
-                EpubElement.TextBlock(
-                    blockIdCounter++,
-                    rawText.subSequence(lastIndex, textStr.length),
-                    lastIndex
-                )
-            )
-        }
-
-        val map = mutableMapOf<Int, TextFieldValue>()
-        elements.filterIsInstance<EpubElement.TextBlock>().forEach { element ->
-            val builder = AnnotatedString.Builder(element.content)
-            val gStart = element.globalStartIndex
-            val gEnd = gStart + element.content.length
-
-            for (note in pageNotes) {
-                val nStart = note.textRangeStart ?: 0
-                val nEnd = note.textRangeEnd ?: 0
-                if (nEnd <= gStart || nStart >= gEnd) continue
-
-                val intersectStart = maxOf(gStart, nStart)
-                val intersectEnd = minOf(gEnd, nEnd)
-                if (intersectStart < intersectEnd) {
-                    builder.addStyle(
-                        SpanStyle(background = Color(0x66FFEB3B)),
-                        intersectStart - gStart,
-                        intersectEnd - gStart
-                    )
-                }
-            }
-            map[element.uid] = TextFieldValue(builder.toAnnotatedString())
-        }
-        Pair(elements, map)
-    }
-
-    val pageElements = processedData.first
-    val textStates = remember(processedData.second) {
-        mutableStateMapOf<Int, TextFieldValue>().apply { putAll(processedData.second) }
-    }
-
+    val data = processedData!!
+    val textStates = remember(data) { mutableStateMapOf<Int, TextFieldValue>().apply { putAll(data.textStates) } }
     var activeBlockId by remember { mutableStateOf<Int?>(null) }
 
+    // Selection UI synchronization
     LaunchedEffect(globalTextSelection) {
         if (globalTextSelection == null) {
             textStates.keys.forEach { key ->
-                val s = textStates[key]
-                if (s != null && !s.selection.collapsed) {
-                    textStates[key] = s.copy(selection = TextRange.Zero)
+                if (textStates[key]?.selection?.collapsed == false) {
+                    textStates[key] = textStates[key]!!.copy(selection = TextRange.Zero)
                 }
             }
             activeBlockId = null
         }
     }
 
-    val customToolbar = remember(activeBlockId) {
-        CustomTextToolbar(
-            onShowMenu = {
-                activeBlockId?.let { id ->
-                    val state = textStates[id] ?: return@let
-                    if (!state.selection.collapsed) {
-                        val txt = state.text.substring(state.selection.min, state.selection.max)
-                        viewModel.setTextSelection(pageIndex, txt, state.selection)
-                    }
-                }
-            },
-            onHideMenu = { },
-            onCopy = { viewModel.clearAllSelection() }
-        )
-    }
+    val selectionColors = remember { TextSelectionColors(handleColor = Color(0xFF2196F3), backgroundColor = Color(0x662196F3)) }
 
-    val selectionColors = remember {
-        TextSelectionColors(handleColor = Color(0xFF2196F3), backgroundColor = Color(0x662196F3))
+    // Standard Toolbar hiding (as requested previously)
+    val emptyToolbar = remember {
+        object : androidx.compose.ui.platform.TextToolbar {
+            override val status = androidx.compose.ui.platform.TextToolbarStatus.Hidden
+            override fun hide() {}
+            override fun showMenu(r: Rect, copy: (() -> Unit)?, p: (() -> Unit)?, cu: (() -> Unit)?, s: (() -> Unit)?) {}
+        }
     }
 
     CompositionLocalProvider(
-        LocalTextToolbar provides customToolbar,
+        LocalTextToolbar provides emptyToolbar,
         LocalTextSelectionColors provides selectionColors
     ) {
+        val pageModifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+            .pointerInput(Unit) { detectTapGestures { viewModel.clearAllSelection() } }
+
         if (!isVerticalMode) {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 16.dp)
-                    .pointerInput(Unit) { detectTapGestures { viewModel.clearAllSelection() } },
-                contentPadding = PaddingValues(vertical = 24.dp)
-            ) {
-                items(items = pageElements, key = { it.id }) { element ->
-                    EpubElementItem(
-                        element = element,
-                        fontSize = fontSize,
-                        isNightMode = isNightMode,
-                        textState = textStates[if (element is EpubElement.TextBlock) element.uid else -1],
-                        epubImages = epubImages,
-                        onTextChange = { uid, newValue ->
-                            textStates[uid] = newValue
-                            if (!newValue.selection.collapsed) {
-                                if (activeBlockId != uid) {
-                                    activeBlockId?.let { oldId ->
-                                        textStates[oldId] = textStates[oldId]?.copy(selection = TextRange.Zero) ?: TextFieldValue()
-                                    }
-                                    activeBlockId = uid
-                                }
-
-                                val txt = newValue.text.substring(newValue.selection.min, newValue.selection.max)
-
-                                viewModel.setTextSelection(pageIndex, txt, newValue.selection)
-                            } else {
-                                val localCursor = newValue.selection.start
-                                val globalCursor = localCursor + (element as EpubElement.TextBlock).globalStartIndex
-                                val hitNote = pageNotes.find { note ->
-                                    globalCursor in (note.textRangeStart ?: -1) until (note.textRangeEnd ?: -1)
-                                }
-                                if (hitNote != null) {
-                                    onNoteClick(hitNote.noteContent)
-                                    viewModel.clearAllSelection()
-                                } else if (activeBlockId == uid) {
-                                    viewModel.clearAllSelection()
-                                }
-                            }
-                        }
-                    )
+            LazyColumn(modifier = pageModifier, contentPadding = PaddingValues(vertical = 24.dp)) {
+                items(items = data.elements, key = { it.id }) { element ->
+                    EpubElementItem(element, fontSize, isNightMode, textStates[if (element is EpubElement.TextBlock) element.uid else -1], epubImages) { uid, newValue ->
+                        handleTextChange(uid, newValue, element, pageIndex, viewModel, textStates, activeBlockId, { activeBlockId = it }, onNoteClick, pageNotes)
+                    }
                 }
             }
         } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 16.dp, vertical = 24.dp)
-                    .pointerInput(Unit) { detectTapGestures { viewModel.clearAllSelection() } }
-            ) {
-                pageElements.forEach { element ->
-                    EpubElementItem(
-                        element = element,
-                        fontSize = fontSize,
-                        isNightMode = isNightMode,
-                        textState = textStates[if (element is EpubElement.TextBlock) element.uid else -1],
-                        epubImages = epubImages,
-                        onTextChange = { uid, newValue ->
-                            textStates[uid] = newValue
-                            if (!newValue.selection.collapsed) {
-                                if (activeBlockId != uid) {
-                                    activeBlockId?.let { oldId ->
-                                        textStates[oldId] = textStates[oldId]?.copy(selection = TextRange.Zero) ?: TextFieldValue()
-                                    }
-                                    activeBlockId = uid
-                                }
-                                val txt = newValue.text.substring(newValue.selection.min, newValue.selection.max)
-                                viewModel.setTextSelection(pageIndex, txt, newValue.selection)
-                            } else {
-                                val localCursor = newValue.selection.start
-                                val globalCursor = localCursor + (element as EpubElement.TextBlock).globalStartIndex
-                                val hitNote = pageNotes.find { note ->
-                                    globalCursor in (note.textRangeStart ?: -1) until (note.textRangeEnd ?: -1)
-                                }
-                                if (hitNote != null) {
-                                    onNoteClick(hitNote.noteContent)
-                                    viewModel.clearAllSelection()
-                                } else if (activeBlockId == uid) {
-                                    viewModel.clearAllSelection()
-                                }
-                            }
-                        }
-                    )
+            Column(modifier = pageModifier.padding(vertical = 24.dp)) {
+                data.elements.forEach { element ->
+                    EpubElementItem(element, fontSize, isNightMode, textStates[if (element is EpubElement.TextBlock) element.uid else -1], epubImages) { uid, newValue ->
+                        handleTextChange(uid, newValue, element, pageIndex, viewModel, textStates, activeBlockId, { activeBlockId = it }, onNoteClick, pageNotes)
+                    }
                 }
             }
+        }
+    }
+}
+
+// Logic extracted to avoid repetitive code in Column/LazyColumn
+private fun handleTextChange(
+    uid: Int, newValue: TextFieldValue, element: EpubElement, pageIndex: Int,
+    viewModel: ReaderViewModel, textStates: MutableMap<Int, TextFieldValue>,
+    activeBlockId: Int?, setActiveBlock: (Int?) -> Unit,
+    onNoteClick: (String) -> Unit, pageNotes: List<NoteEntity>
+) {
+    textStates[uid] = newValue
+    if (!newValue.selection.collapsed) {
+        if (activeBlockId != uid) {
+            activeBlockId?.let { old -> textStates[old] = textStates[old]?.copy(selection = TextRange.Zero) ?: TextFieldValue() }
+            setActiveBlock(uid)
+        }
+        viewModel.setTextSelection(pageIndex, newValue.text.substring(newValue.selection.min, newValue.selection.max), newValue.selection)
+    } else {
+        val globalCursor = newValue.selection.start + (element as EpubElement.TextBlock).globalStartIndex
+        val hitNote = pageNotes.find { note ->
+            globalCursor in (note.textRangeStart ?: -1) until (note.textRangeEnd ?: -1)
+        }
+        if (hitNote != null) {
+            onNoteClick(hitNote.noteContent)
+            viewModel.clearAllSelection()
+        } else if (activeBlockId == uid) {
+            viewModel.clearAllSelection()
         }
     }
 }
@@ -383,7 +292,7 @@ private fun EpubElementItem(
                     textAlign = TextAlign.Justify,
                     fontFamily = FontFamily.Serif
                 ),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
             )
         }
         is EpubElement.ImageBlock -> {
@@ -392,9 +301,7 @@ private fun EpubElementItem(
                     bitmap = it.asImageBitmap(),
                     contentDescription = null,
                     contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 12.dp)
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)
                 )
             }
         }
@@ -437,7 +344,27 @@ private fun PdfTextPage(
         TextSelectionColors(handleColor = Color(0xFF2196F3), backgroundColor = Color(0x662196F3))
     }
 
-    CompositionLocalProvider(LocalTextSelectionColors provides selectionColors) {
+    val emptyToolbar = remember {
+        object : androidx.compose.ui.platform.TextToolbar {
+            override val status: androidx.compose.ui.platform.TextToolbarStatus =
+                androidx.compose.ui.platform.TextToolbarStatus.Hidden
+
+            override fun hide() {}
+
+            override fun showMenu(
+                rect: androidx.compose.ui.geometry.Rect,
+                onCopyRequested: (() -> Unit)?,
+                onPasteRequested: (() -> Unit)?,
+                onCutRequested: (() -> Unit)?,
+                onSelectAllRequested: (() -> Unit)?
+            ) {
+                // By leaving this empty, the system "Copy/Select All"
+                // popup will never be triggered.
+            }
+        }
+    }
+
+    CompositionLocalProvider(LocalTextSelectionColors provides selectionColors, LocalTextToolbar provides emptyToolbar) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
