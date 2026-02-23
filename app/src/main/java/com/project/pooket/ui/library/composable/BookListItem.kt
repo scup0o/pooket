@@ -158,7 +158,7 @@ fun BookListItem(book: BookEntity, onClick: () -> Unit, height: Dp = 130.dp, wid
                     )
                 }
             }
-            if (!book.isFavorite)
+            if (book.isFavorite)
                 Icon(
                     Icons.Rounded.Favorite,
                     null,

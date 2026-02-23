@@ -74,7 +74,7 @@ class ReaderViewModel @Inject constructor(
     private val _isEpub = MutableStateFlow(false)
     val isEpub = _isEpub.asStateFlow()
 
-    // [UPDATED] Stores images extracted from EPUB (Key: filename, Value: Bitmap)
+    // Stores images extracted from EPUB
     private val _epubImages = MutableStateFlow<Map<String, Bitmap>>(emptyMap())
     val epubImages = _epubImages.asStateFlow()
 

@@ -96,7 +96,7 @@ fun BookGridItem(book: BookEntity, onClick: () -> Unit, height: Dp = 160.dp, wid
                     }
                 }
 
-                if (!book.isFavorite)
+                if (book.isFavorite)
                     Icon(
                         Icons.Rounded.Favorite,
                         null,

@@ -5,11 +5,13 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
@@ -20,16 +22,27 @@ import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.ViewCarousel
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Remove
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.SliderState
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 
 
@@ -39,6 +52,7 @@ fun ReaderControls(
     isVertical: Boolean,
     isTextMode: Boolean,
     isLocked: Boolean,
+    isEpub: Boolean = true,
     onToggleLock: () -> Unit,
     onToggleMode: () -> Unit,
     onToggleTextMode: () -> Unit,
@@ -53,7 +67,7 @@ fun ReaderControls(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 32.dp, start = 20.dp, end = 20.dp),
+                .padding(bottom = 5.dp, start = 20.dp, end = 20.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -70,18 +84,28 @@ fun ReaderControls(
                         "Mode"
                     )
                 }
-                FloatingActionButton(
-                    onClick = onToggleLock,
-                    containerColor = if (isLocked) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer
-                ) {
-                    Icon(if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen, "Lock")
+                if (!isEpub) {
+                    if (!isTextMode)
+                        FloatingActionButton(
+                            onClick = onToggleLock,
+                            containerColor = if (isLocked) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Icon(
+                                if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                "Lock"
+                            )
+                        }
+                    FloatingActionButton(
+                        onClick = onToggleTextMode,
+                        containerColor = if (isTextMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer
+                    ) {
+                        Icon(
+                            if (isTextMode) Icons.Default.Image else Icons.Default.TextFields,
+                            "Text"
+                        )
+                    }
                 }
-                FloatingActionButton(
-                    onClick = onToggleTextMode,
-                    containerColor = if (isTextMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer
-                ) {
-                    Icon(if (isTextMode) Icons.Default.Image else Icons.Default.TextFields, "Text")
-                }
+
             }
             SmallFloatingActionButton(
                 onClick = onNextPage,
@@ -94,8 +118,15 @@ fun ReaderControls(
 }
 
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FontSizeControl(visible: Boolean, fontSize: Float, onFontSizeChange: (Float) -> Unit) {
+fun FontSizeControl(
+    visible: Boolean,
+    fontSize: Float,
+    onFontSizeChange: (Float) -> Unit
+) {
+    var sliderPosition by remember(fontSize) { mutableFloatStateOf(fontSize) }
+
     AnimatedVisibility(
         visible,
         enter = slideInVertically { it },
@@ -105,12 +136,51 @@ fun FontSizeControl(visible: Boolean, fontSize: Float, onFontSizeChange: (Float)
             color = MaterialTheme.colorScheme.surfaceVariant,
             shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
         ) {
-            Column(Modifier.padding(20.dp)) {
+            Column(modifier = Modifier.padding(20.dp)) {
                 Text(
-                    "Font Size: ${fontSize.toInt()}sp",
+                    "Font size: ${sliderPosition.toInt()}sp",
                     style = MaterialTheme.typography.labelMedium
                 )
-                Slider(value = fontSize, onValueChange = onFontSizeChange, valueRange = 12f..40f)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = {
+                            val newSize = (sliderPosition - 1f).coerceAtLeast(12f)
+                            sliderPosition = newSize
+                            onFontSizeChange(newSize)
+                        },
+                        modifier = Modifier.size(18.dp)
+                    ) {
+                        Icon(Icons.Rounded.Remove, null)
+                    }
+
+                    Slider(
+                        value = sliderPosition,
+                        onValueChange = { sliderPosition = it },
+                        onValueChangeFinished = { onFontSizeChange(sliderPosition) },
+                        valueRange = 12f..40f,
+                        thumb = {
+                            SliderDefaults.Thumb(
+                                interactionSource = remember { MutableInteractionSource() },
+                                thumbSize = DpSize(width = 5.dp, height = 20.dp)
+                            )
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    IconButton(onClick = {
+                        val newSize = (sliderPosition + 1f).coerceAtMost(40f)
+                        sliderPosition = newSize
+                        onFontSizeChange(newSize)
+                    }, modifier = Modifier.size(18.dp)) {
+
+                        Icon(Icons.Rounded.Add, null)
+                    }
+                }
             }
         }
     }

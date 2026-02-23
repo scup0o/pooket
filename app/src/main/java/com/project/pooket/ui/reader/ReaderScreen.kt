@@ -10,8 +10,13 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Note
+import androidx.compose.material.icons.filled.AirlineStops
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.rounded.Airplay
 import androidx.compose.material.icons.rounded.ArrowBackIosNew
+import androidx.compose.material.icons.rounded.Draw
+import androidx.compose.material.icons.rounded.Signpost
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toSize
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.project.pooket.ui.common.NightLightDropDownMenu
 import com.project.pooket.ui.reader.composable.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -89,6 +95,7 @@ fun ReaderScreen(
     var showControls by remember { mutableStateOf(true) }
     var showNotesSheet by remember { mutableStateOf(false) }
     var showNoteDialog by remember { mutableStateOf(false) }
+    var showSelectPageDialog by remember { mutableStateOf(false) }
 
     //scroll/pager-state
     val pagerState = rememberPagerState(pageCount = { totalPages })
@@ -178,7 +185,9 @@ fun ReaderScreen(
                 visible = showControls,
                 title = bookTitle,
                 onBack = onBack,
-                onShowNotes = { showNotesSheet = true })
+                onShowNotes = { showNotesSheet = true },
+                onGoToPage = { showSelectPageDialog = true },
+                onHideMenu = {showControls= false})
         },
         bottomBar = {
             FontSizeControl(
@@ -188,17 +197,32 @@ fun ReaderScreen(
             )
         },
         floatingActionButton = {
-            ReaderControls(
-                visible = showControls,
-                isVertical = isVerticalMode,
-                isTextMode = isTextMode,
-                isLocked = isViewportLocked,
-                onToggleLock = { isViewportLocked = !isViewportLocked },
-                onToggleMode = viewModel::toggleReadingMode,
-                onToggleTextMode = viewModel::toggleTextMode,
-                onPrevPage = onPrevPageAction,
-                onNextPage = onNextPageAction
-            )
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                if (showControls) {
+                    PageIndicator(
+                        currentPage = masterPage + 1,
+                        totalPages = totalPages,
+                        modifier = Modifier
+                    )
+                }
+
+                ReaderControls(
+                    isEpub = isEpub,
+                    visible = showControls,
+                    isVertical = isVerticalMode,
+                    isTextMode = isTextMode,
+                    isLocked = isViewportLocked,
+                    onToggleLock = { isViewportLocked = !isViewportLocked },
+                    onToggleMode = viewModel::toggleReadingMode,
+                    onToggleTextMode = viewModel::toggleTextMode,
+                    onPrevPage = onPrevPageAction,
+                    onNextPage = onNextPageAction
+                )
+            }
+
         },
         floatingActionButtonPosition = FabPosition.Center
     ) { innerPadding ->
@@ -230,22 +254,26 @@ fun ReaderScreen(
                                 awaitPointerEventScope {
                                     while (true) {
                                         val downEvent = awaitPointerEvent(PointerEventPass.Initial)
-                                        val downChange = downEvent.changes.find { it.changedToDown() }
+                                        val downChange =
+                                            downEvent.changes.find { it.changedToDown() }
 
                                         if (downChange != null && downChange.position.y <= topZonePx) {
                                             val startPos = downChange.position
                                             var isTap = true
 
                                             do {
-                                                val event = awaitPointerEvent(PointerEventPass.Initial)
-                                                val change = event.changes.find { it.id == downChange.id }
+                                                val event =
+                                                    awaitPointerEvent(PointerEventPass.Initial)
+                                                val change =
+                                                    event.changes.find { it.id == downChange.id }
 
                                                 if (change == null) {
                                                     isTap = false; break
                                                 }
 
                                                 if (change.positionChanged()) {
-                                                    val distance = (change.position - startPos).getDistance()
+                                                    val distance =
+                                                        (change.position - startPos).getDistance()
                                                     if (distance > touchSlop) {
                                                         isTap = false
                                                     }
@@ -306,7 +334,8 @@ fun ReaderScreen(
                                             if (!pastTouchSlop) {
                                                 zoom *= zoomChange
                                                 pan += panChange
-                                                val centroidSize = event.calculateCentroidSize(useCurrent = false)
+                                                val centroidSize =
+                                                    event.calculateCentroidSize(useCurrent = false)
                                                 val panMotion = pan.getDistance()
                                                 if (panMotion > touchSlop ||
                                                     abs(1f - zoom) * centroidSize > touchSlop
@@ -316,8 +345,12 @@ fun ReaderScreen(
                                             }
 
                                             if (pastTouchSlop) {
-                                                val newScale = (globalScale * zoomChange).coerceIn(1f, 5f)
-                                                val effectivePan = if (isViewportLocked) Offset(0f, panChange.y) else panChange
+                                                val newScale =
+                                                    (globalScale * zoomChange).coerceIn(1f, 5f)
+                                                val effectivePan = if (isViewportLocked) Offset(
+                                                    0f,
+                                                    panChange.y
+                                                ) else panChange
 
                                                 if (isViewportLocked && event.changes.size == 1) {
                                                     val change = event.changes[0]
@@ -327,7 +360,11 @@ fun ReaderScreen(
                                                 }
 
                                                 val proposedOffset = globalOffset + effectivePan
-                                                val clampedOffset = clampOffset(proposedOffset, newScale, size.toSize())
+                                                val clampedOffset = clampOffset(
+                                                    proposedOffset,
+                                                    newScale,
+                                                    size.toSize()
+                                                )
 
                                                 globalScale = newScale
                                                 globalOffset = clampedOffset
@@ -367,7 +404,9 @@ fun ReaderScreen(
                                 modifier = Modifier.fillMaxSize(),
                                 userScrollEnabled = isTextMode || globalScale <= 1.01f
                             ) {
-                                items(count = totalPages, key = { it }) { index -> pageContent(index) }
+                                items(
+                                    count = totalPages,
+                                    key = { it }) { index -> pageContent(index) }
                             }
                         } else {
                             HorizontalPager(
@@ -377,20 +416,8 @@ fun ReaderScreen(
                             ) { index -> pageContent(index) }
                         }
                     }
-                    MenuController(
-                        onToggleMenu = { showControls = !showControls },
-                        modifier = Modifier.align(Alignment.TopEnd)
-                    )
 
-                    if (showControls) {
-                        PageIndicator(
-                            currentPage = masterPage + 1,
-                            totalPages = totalPages,
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(bottom = if (isTextMode) 180.dp else 100.dp)
-                        )
-                    }
+
                 }
 
                 AnimatedVisibility(
@@ -434,11 +461,33 @@ fun ReaderScreen(
             onConfirm = { viewModel.saveNote(it); showNoteDialog = false }
         )
     }
+    if (showSelectPageDialog) {
+        PageNumberInput(
+            onInputPageNumber = { page ->
+                scope.launch {
+                    if (page > totalPages - 1) masterPage = totalPages - 1 else masterPage = page
+                    if (isVerticalMode) listState.scrollToItem(masterPage)
+                    else pagerState.scrollToPage(masterPage)
+                    viewModel.onPageChanged(masterPage)
+                    showSelectPageDialog = false
+                }
+            },
+            onDismiss = { showSelectPageDialog = false }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ReaderTopBar(visible: Boolean, title: String, onBack: () -> Unit, onShowNotes: () -> Unit) {
+fun ReaderTopBar(
+    visible: Boolean,
+    title: String,
+    onBack: () -> Unit,
+    onShowNotes: () -> Unit,
+    onGoToPage: () -> Unit,
+    onHideMenu: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
     AnimatedVisibility(
         visible,
         enter = slideInVertically { -it },
@@ -461,12 +510,47 @@ fun ReaderTopBar(visible: Boolean, title: String, onBack: () -> Unit, onShowNote
                 }
             },
             actions = {
-                IconButton(onClick = onShowNotes) {
-                    Icon(
-                        Icons.AutoMirrored.Rounded.Note,
-                        "Notes"
-                    )
+                Row{
+                    IconButton(
+                        onClick = onHideMenu
+                    ) {
+                        Icon(Icons.Rounded.Airplay, null)
+                    }
+                    Box {
+                        IconButton(
+                            onClick = { expanded = !expanded }
+                        ) {
+                            Icon(
+                                Icons.Default.MoreVert,
+                                null
+                            )
+                        }
+                        NightLightDropDownMenu(
+                            expanded = expanded, onDismissRequest = { expanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Notes") },
+                                onClick = onShowNotes,
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Rounded.Draw,
+                                        "Notes"
+                                    )
+                                })
+                            DropdownMenuItem(
+                                text = { Text("Go to page...") },
+                                onClick = onGoToPage,
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Rounded.Signpost,
+                                        null
+                                    )
+                                }
+                            )
+                        }
+                    }
                 }
+
             }
         )
     }
