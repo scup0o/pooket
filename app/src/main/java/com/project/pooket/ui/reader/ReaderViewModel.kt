@@ -208,7 +208,7 @@ class ReaderViewModel @Inject constructor(
                 if (mimeType == "application/pdf" || uriString.endsWith(".pdf", true)) {
                     _isEpub.value = false
                     loadPdfInternal(uri)
-                    _isLoading.value = false // PDF finishes loading here
+                    _isLoading.value = false
                 } else {
                     _isEpub.value = true
                     _isTextMode.value = true
@@ -247,7 +247,6 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    // Optimization: Memory-safe image decoding
     private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
         val (height: Int, width: Int) = options.outHeight to options.outWidth
         var inSampleSize = 1
@@ -270,13 +269,12 @@ class ReaderViewModel @Inject constructor(
             if (res.mediaType.toString().startsWith("image/")) {
                 try {
                     val data = res.data
-                    // Optimization: Downsample huge images to prevent OOM Crashes
                     val options = BitmapFactory.Options().apply {
                         inJustDecodeBounds = true
                         BitmapFactory.decodeByteArray(data, 0, data.size, this)
                         inSampleSize = calculateInSampleSize(this, 1080, 1920)
                         inJustDecodeBounds = false
-                        inPreferredConfig = Bitmap.Config.RGB_565 // Half the memory of ARGB_8888
+                        inPreferredConfig = Bitmap.Config.RGB_565
                     }
                     val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size, options)
 
@@ -306,7 +304,6 @@ class ReaderViewModel @Inject constructor(
                     img.replaceWith(TextNode("[IMAGE:$filename]"))
                 }
 
-                // Optimization: Disable prettyPrint to save heavy DOM recursion CPU time
                 val settings = Document.OutputSettings()
                 settings.prettyPrint(false)
                 doc.outputSettings(settings)
@@ -370,7 +367,7 @@ class ReaderViewModel @Inject constructor(
             val safeHeight = (h - verticalMargin).coerceAtLeast(200)
 
             val newPages = mutableListOf<EpubVirtualPage>()
-            val maxChunkSize = 8000 // Optimization: Max chars per layout pass to prevent CPU freeze
+            val maxChunkSize = 8000
 
             epubChapters.forEachIndexed { chapterIndex, content ->
                 if (content.isEmpty()) return@forEachIndexed
@@ -378,7 +375,6 @@ class ReaderViewModel @Inject constructor(
                 var chunkStart = 0
 
                 while (chunkStart < content.length) {
-                    // Optimization: Find a safe breaking point for the chunk
                     var chunkEnd = minOf(chunkStart + maxChunkSize, content.length)
                     if (chunkEnd < content.length) {
                         while (chunkEnd > chunkStart && !content[chunkEnd].isWhitespace()) {
@@ -387,7 +383,6 @@ class ReaderViewModel @Inject constructor(
                         if (chunkEnd == chunkStart) chunkEnd = minOf(chunkStart + maxChunkSize, content.length)
                     }
 
-                    // Obtain layout strictly for this chunk
                     val layout = StaticLayout.Builder.obtain(content, chunkStart, chunkEnd, paint, availableWidth)
                         .setAlignment(Layout.Alignment.ALIGN_NORMAL)
                         .setLineSpacing(spacingAdd, 1.0f)
@@ -673,7 +668,6 @@ class ReaderViewModel @Inject constructor(
         return findRectsForText(note.pageIndex, note.originalText)
     }
 
-    // Optimization: Return cached string directly
     private fun getCleanTarget(target: String): String {
         return cleanTargetCache.getOrPut(target) {
             target.replace(WHITESPACE_REGEX, "")
