@@ -13,11 +13,11 @@ data class BookEntity(
     val coverImagePath: String?,
     val isCompleted: Boolean=false,
     val isFavorite: Boolean = false,
-    
+
     val format: String,
     val size: Long =0,
     val lastPage: Int =0,
     val totalPages: Int = 0,
     val lastReadTime: Long =0,
-) {
-}
+    val fontSize: Float = 16f
+)

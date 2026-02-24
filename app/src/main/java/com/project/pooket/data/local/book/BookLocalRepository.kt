@@ -149,6 +149,10 @@ class BookLocalRepository @Inject constructor(
         bookDao.updateProgress(bookUri, page, currentTime)
     }
 
+    suspend fun saveFontSize(bookUri: String, fontSize: Float) {
+        bookDao.updateFontSize(bookUri, fontSize)
+    }
+
     suspend fun setCompletedState(completedState: Boolean, bookUri: String){
         bookDao.setCompleteState(isCompleted = completedState, bookUri)
     }

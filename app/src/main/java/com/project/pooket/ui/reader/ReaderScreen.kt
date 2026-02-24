@@ -132,7 +132,8 @@ fun ReaderScreen(
                 val layoutInfo = listState.layoutInfo
                 val visibleItems = layoutInfo.visibleItemsInfo
 
-                if (visibleItems.isEmpty()) return@derivedStateOf 0
+                // FIX: Fallback to the current masterPage when the layout empties during switching, prevents dropping to 0
+                if (visibleItems.isEmpty()) return@derivedStateOf masterPage
 
                 val viewportCenter =
                     (layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset) / 2
@@ -146,7 +147,7 @@ fun ReaderScreen(
                     return@derivedStateOf (layoutInfo.totalItemsCount - 1)
                 }
 
-                return@derivedStateOf centerItem?.index ?: 0
+                return@derivedStateOf centerItem?.index ?: masterPage // changed from 0 to avoid jumping to start
             } else {
                 pagerState.currentPage
             }
@@ -193,7 +194,7 @@ fun ReaderScreen(
             FontSizeControl(
                 visible = showControls && isTextMode,
                 fontSize = fontSize,
-                onFontSizeChange = viewModel::setFontSize
+                onFontSizeChange = {size -> viewModel.setFontSize(size, masterPage)}
             )
         },
         floatingActionButton = {

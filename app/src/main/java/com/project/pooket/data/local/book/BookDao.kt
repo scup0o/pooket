@@ -37,11 +37,15 @@ interface BookDao {
     @Query("UPDATE books SET totalPages = :total WHERE uri = :uri AND totalPages = 0")
     suspend fun initTotalPages(uri: String, total: Int)
 
+    @Query("UPDATE books SET fontSize = :fontSize WHERE uri = :uri")
+    suspend fun updateFontSize(uri: String, fontSize: Float)
+
     @Update
     suspend fun updateBookInfo(book : BookEntity)
 
     @Delete
     suspend fun deleteBooks(books: List<BookEntity>)
+
     @Query("DELETE FROM books WHERE uri LIKE '%' || :folderUri || '%'")
     suspend fun deleteBooksInFolder(folderUri: String)
 }

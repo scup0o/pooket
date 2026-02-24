@@ -20,6 +20,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.createBitmap
 import androidx.core.net.toUri
@@ -203,15 +204,21 @@ class ReaderViewModel @Inject constructor(
                 if (mimeType == "application/pdf" || uriString.endsWith(".pdf", true)) {
                     _isEpub.value = false
                     loadPdfInternal(uri)
+                    _isLoading.value = false // PDF finishes loading here
                 } else {
                     _isEpub.value = true
                     _isTextMode.value = true
                     loadEpubInternal(uri)
+
+                    if (screenSize != null) {
+                        triggerEpubPagination()
+                    }
                 }
 
                 val book = repository.getBook(uriString)
                 _initialPage.value = book?.lastPage ?: 0
                 localIsCompleted = book?.isCompleted == true
+                _fontSize.value = book?.fontSize ?: 16f // Safely load saved font size if available
 
                 loadNotes(uriString)
 
@@ -221,7 +228,6 @@ class ReaderViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Log.e("ReaderVM", "Direct load failed", e)
-            } finally {
                 _isLoading.value = false
             }
         }
@@ -297,18 +303,16 @@ class ReaderViewModel @Inject constructor(
         }
 
         epubChapters = chapters
-        epubPages = chapters.mapIndexed { idx, content -> EpubVirtualPage(idx, 0, content.length) }
-        _pageCount.value = epubPages.size
     }
 
     fun onScreenSizeReady(size: Size, density: Density) {
+        val oldSize = this.screenSize
         this.screenSize = size
         this.screenDensity = density
-        if (_isEpub.value && epubPages.isEmpty()) {
+        if (_isEpub.value && (oldSize != size || epubPages.isEmpty())) {
             triggerEpubPagination()
         }
     }
-
 
     private fun triggerEpubPagination() {
         val w = screenSize?.width?.toInt() ?: return
@@ -316,21 +320,37 @@ class ReaderViewModel @Inject constructor(
         val d = screenDensity ?: return
 
         paginationJob?.cancel()
+        _isLoading.value = true // Ensure loading is shown while calculating
+
         paginationJob = viewModelScope.launch(Dispatchers.Default) {
             delay(100)
 
+            // FIX 1: Match Compose's Serif font and precise Line Height
             val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 textSize = with(d) { _fontSize.value.sp.toPx() }
                 color = android.graphics.Color.BLACK
+                typeface = android.graphics.Typeface.SERIF
             }
+
+            val composeLineHeightPx = with(d) { (_fontSize.value * 1.5f).sp.toPx() }
+            val fontMetrics = paint.fontMetrics
+            val nativeLineHeight = fontMetrics.descent - fontMetrics.ascent
+            val spacingAdd = composeLineHeightPx - nativeLineHeight
+
+            // FIX 2: Account for exact UI margins so text doesn't bleed off screen
+            val verticalMargin = with(d) { 150.dp.toPx() }.toInt()
+            val horizontalMargin = with(d) { 32.dp.toPx() }.toInt()
+
+            val availableWidth = (w - horizontalMargin).coerceAtLeast(100)
+            val safeHeight = (h - verticalMargin).coerceAtLeast(200)
 
             val newPages = mutableListOf<EpubVirtualPage>()
             epubChapters.forEachIndexed { chapterIndex, content ->
                 if (content.isEmpty()) return@forEachIndexed
 
-                val layout = StaticLayout.Builder.obtain(content, 0, content.length, paint, w)
+                val layout = StaticLayout.Builder.obtain(content, 0, content.length, paint, availableWidth)
                     .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                    .setLineSpacing(0f, 1.4f)
+                    .setLineSpacing(spacingAdd, 1.0f)
                     .setIncludePad(false)
                     .build()
 
@@ -338,7 +358,7 @@ class ReaderViewModel @Inject constructor(
                 var currentY = 0
 
                 while (startLine < layout.lineCount) {
-                    val targetBottom = currentY + h
+                    val targetBottom = currentY + safeHeight
                     var endLine = layout.getLineForVertical(targetBottom)
                     if (endLine > startLine && layout.getLineBottom(endLine) > targetBottom) endLine--
                     if (endLine < startLine) endLine = startLine
@@ -353,6 +373,9 @@ class ReaderViewModel @Inject constructor(
             }
             epubPages = newPages
             _pageCount.value = newPages.size
+
+            // FIX 3: End loading only after all calculations are finished
+            _isLoading.value = false
         }
     }
 
@@ -495,6 +518,7 @@ class ReaderViewModel @Inject constructor(
             delay(1000)
 
             repository.saveProgress(uri, pageIndex)
+            repository.saveFontSize(uri, _fontSize.value)
             val total = _pageCount.value
             if (total > 0) {
                 val shouldBeCompleted = (pageIndex >= total - 1)
@@ -513,8 +537,21 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    fun setFontSize(size: Float) {
+    fun setFontSize(size: Float, pageIndex:Int) {
+        if (_fontSize.value == size) return
         _fontSize.value = size
+
+        if (_isEpub.value) {
+            triggerEpubPagination()
+            val uri = currentBookUri ?: return
+            saveJob?.cancel()
+
+            saveJob = viewModelScope.launch{
+                val currentTotal = _pageCount.value
+                repository.initTotalPages(uri, currentTotal)
+                onPageChanged(pageIndex)
+            }
+        }
     }
 
     fun loadNotes(uri: String) {
