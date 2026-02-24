@@ -47,6 +47,7 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.TextNode
 import java.io.ByteArrayOutputStream
 import java.io.OutputStreamWriter
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import kotlin.math.abs
 import kotlin.math.sqrt
@@ -81,8 +82,8 @@ class ReaderViewModel @Inject constructor(
 
     // EPUB Pagination Data
     data class EpubVirtualPage(val chapterIndex: Int, val startOffset: Int, val endOffset: Int)
-    private var epubChapters = listOf<AnnotatedString>() // Cached full chapters
-    private var epubPages = listOf<EpubVirtualPage>() // Calculated page slices
+    private var epubChapters = listOf<AnnotatedString>()
+    private var epubPages = listOf<EpubVirtualPage>()
     private var paginationJob: Job? = null
     private var screenSize: Size? = null
     private var screenDensity: Density? = null
@@ -136,6 +137,7 @@ class ReaderViewModel @Inject constructor(
     }
     private val textCache = LruCache<Int, String>(100)
     private val pageCharsCache = LruCache<Int, List<PdfChar>>(50)
+    private val cleanTargetCache = ConcurrentHashMap<String, String>() // Optimization: Cache clean regex strings
 
     init {
         PDFBoxResourceLoader.init(app)
@@ -163,6 +165,7 @@ class ReaderViewModel @Inject constructor(
                     pdDocument = null
                     textCache.evictAll()
                     pageCharsCache.evictAll()
+                    cleanTargetCache.clear()
                 } catch (e: Exception) { }
             }
             epubChapters = emptyList()
@@ -170,6 +173,7 @@ class ReaderViewModel @Inject constructor(
             _epubImages.value = emptyMap()
         }
     }
+
     private suspend fun ensurePdDocumentLoaded(): PDDocument? {
         if (_isEpub.value) return null
 
@@ -218,7 +222,7 @@ class ReaderViewModel @Inject constructor(
                 val book = repository.getBook(uriString)
                 _initialPage.value = book?.lastPage ?: 0
                 localIsCompleted = book?.isCompleted == true
-                _fontSize.value = book?.fontSize ?: 16f // Safely load saved font size if available
+                _fontSize.value = book?.fontSize ?: 16f
 
                 loadNotes(uriString)
 
@@ -243,6 +247,20 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
+    // Optimization: Memory-safe image decoding
+    private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
+        val (height: Int, width: Int) = options.outHeight to options.outWidth
+        var inSampleSize = 1
+        if (height > reqHeight || width > reqWidth) {
+            val halfHeight: Int = height / 2
+            val halfWidth: Int = width / 2
+            while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
+                inSampleSize *= 2
+            }
+        }
+        return inSampleSize
+    }
+
     private suspend fun loadEpubInternal(uri: Uri) {
         val stream = app.contentResolver.openInputStream(uri) ?: throw Exception("Cannot open EPUB")
         val book = EpubReader().readEpub(stream)
@@ -252,7 +270,16 @@ class ReaderViewModel @Inject constructor(
             if (res.mediaType.toString().startsWith("image/")) {
                 try {
                     val data = res.data
-                    val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
+                    // Optimization: Downsample huge images to prevent OOM Crashes
+                    val options = BitmapFactory.Options().apply {
+                        inJustDecodeBounds = true
+                        BitmapFactory.decodeByteArray(data, 0, data.size, this)
+                        inSampleSize = calculateInSampleSize(this, 1080, 1920)
+                        inJustDecodeBounds = false
+                        inPreferredConfig = Bitmap.Config.RGB_565 // Half the memory of ARGB_8888
+                    }
+                    val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size, options)
+
                     if (bitmap != null) {
                         images[path] = bitmap
                         val filename = path.substringAfterLast("/")
@@ -279,8 +306,9 @@ class ReaderViewModel @Inject constructor(
                     img.replaceWith(TextNode("[IMAGE:$filename]"))
                 }
 
+                // Optimization: Disable prettyPrint to save heavy DOM recursion CPU time
                 val settings = Document.OutputSettings()
-                settings.prettyPrint(true)
+                settings.prettyPrint(false)
                 doc.outputSettings(settings)
 
                 doc.select("br").before("\\n")
@@ -291,8 +319,7 @@ class ReaderViewModel @Inject constructor(
 
                 val hasImage = cleanText.contains("[IMAGE:")
 
-                val isJunk = !hasImage && (cleanText.isEmpty() ||
-                        (cleanText.length < 20))
+                val isJunk = !hasImage && (cleanText.isEmpty() || (cleanText.length < 20))
 
                 if (!isJunk) {
                     chapters.add(AnnotatedString(cleanText))
@@ -320,12 +347,11 @@ class ReaderViewModel @Inject constructor(
         val d = screenDensity ?: return
 
         paginationJob?.cancel()
-        _isLoading.value = true // Ensure loading is shown while calculating
+        _isLoading.value = true
 
         paginationJob = viewModelScope.launch(Dispatchers.Default) {
             delay(100)
 
-            // FIX 1: Match Compose's Serif font and precise Line Height
             val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 textSize = with(d) { _fontSize.value.sp.toPx() }
                 color = android.graphics.Color.BLACK
@@ -337,7 +363,6 @@ class ReaderViewModel @Inject constructor(
             val nativeLineHeight = fontMetrics.descent - fontMetrics.ascent
             val spacingAdd = composeLineHeightPx - nativeLineHeight
 
-            // FIX 2: Account for exact UI margins so text doesn't bleed off screen
             val verticalMargin = with(d) { 150.dp.toPx() }.toInt()
             val horizontalMargin = with(d) { 32.dp.toPx() }.toInt()
 
@@ -345,36 +370,51 @@ class ReaderViewModel @Inject constructor(
             val safeHeight = (h - verticalMargin).coerceAtLeast(200)
 
             val newPages = mutableListOf<EpubVirtualPage>()
+            val maxChunkSize = 8000 // Optimization: Max chars per layout pass to prevent CPU freeze
+
             epubChapters.forEachIndexed { chapterIndex, content ->
                 if (content.isEmpty()) return@forEachIndexed
 
-                val layout = StaticLayout.Builder.obtain(content, 0, content.length, paint, availableWidth)
-                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                    .setLineSpacing(spacingAdd, 1.0f)
-                    .setIncludePad(false)
-                    .build()
+                var chunkStart = 0
 
-                var startLine = 0
-                var currentY = 0
+                while (chunkStart < content.length) {
+                    // Optimization: Find a safe breaking point for the chunk
+                    var chunkEnd = minOf(chunkStart + maxChunkSize, content.length)
+                    if (chunkEnd < content.length) {
+                        while (chunkEnd > chunkStart && !content[chunkEnd].isWhitespace()) {
+                            chunkEnd--
+                        }
+                        if (chunkEnd == chunkStart) chunkEnd = minOf(chunkStart + maxChunkSize, content.length)
+                    }
 
-                while (startLine < layout.lineCount) {
-                    val targetBottom = currentY + safeHeight
-                    var endLine = layout.getLineForVertical(targetBottom)
-                    if (endLine > startLine && layout.getLineBottom(endLine) > targetBottom) endLine--
-                    if (endLine < startLine) endLine = startLine
+                    // Obtain layout strictly for this chunk
+                    val layout = StaticLayout.Builder.obtain(content, chunkStart, chunkEnd, paint, availableWidth)
+                        .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                        .setLineSpacing(spacingAdd, 1.0f)
+                        .setIncludePad(false)
+                        .build()
 
-                    val start = layout.getLineStart(startLine)
-                    val end = layout.getLineEnd(endLine)
-                    newPages.add(EpubVirtualPage(chapterIndex, start, end))
+                    var startLine = 0
+                    var currentY = 0
 
-                    startLine = endLine + 1
-                    currentY = layout.getLineTop(startLine)
+                    while (startLine < layout.lineCount) {
+                        val targetBottom = currentY + safeHeight
+                        var endLine = layout.getLineForVertical(targetBottom)
+                        if (endLine > startLine && layout.getLineBottom(endLine) > targetBottom) endLine--
+                        if (endLine < startLine) endLine = startLine
+
+                        val startOffset = layout.getLineStart(startLine)
+                        val endOffset = layout.getLineEnd(endLine)
+                        newPages.add(EpubVirtualPage(chapterIndex, startOffset, endOffset))
+
+                        startLine = endLine + 1
+                        currentY = layout.getLineTop(startLine)
+                    }
+                    chunkStart = chunkEnd
                 }
             }
             epubPages = newPages
             _pageCount.value = newPages.size
-
-            // FIX 3: End loading only after all calculations are finished
             _isLoading.value = false
         }
     }
@@ -633,6 +673,13 @@ class ReaderViewModel @Inject constructor(
         return findRectsForText(note.pageIndex, note.originalText)
     }
 
+    // Optimization: Return cached string directly
+    private fun getCleanTarget(target: String): String {
+        return cleanTargetCache.getOrPut(target) {
+            target.replace(WHITESPACE_REGEX, "")
+        }
+    }
+
     suspend fun findRectsForText(pageIndex: Int, text: String): List<NormRect> = withContext(Dispatchers.Default) {
         if (_isEpub.value) return@withContext emptyList()
 
@@ -640,7 +687,7 @@ class ReaderViewModel @Inject constructor(
         val chars = getPageChars(pageIndex)
         if (chars.isEmpty()) return@withContext emptyList()
 
-        val cleanTarget = text.replace(WHITESPACE_REGEX, "")
+        val cleanTarget = getCleanTarget(text)
         if (cleanTarget.isEmpty()) return@withContext emptyList()
 
         var matchIndex = 0
@@ -825,7 +872,7 @@ class ReaderViewModel @Inject constructor(
         val exactIndex = container.indexOf(target)
         if (exactIndex != -1) return exactIndex to (exactIndex + target.length)
 
-        val cleanTarget = target.replace(WHITESPACE_REGEX, "")
+        val cleanTarget = getCleanTarget(target)
         if (cleanTarget.isEmpty()) return null
 
         var matchCount = 0
