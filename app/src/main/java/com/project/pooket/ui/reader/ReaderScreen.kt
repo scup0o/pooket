@@ -132,7 +132,6 @@ fun ReaderScreen(
                 val layoutInfo = listState.layoutInfo
                 val visibleItems = layoutInfo.visibleItemsInfo
 
-                // FIX: Fallback to the current masterPage when the layout empties during switching, prevents dropping to 0
                 if (visibleItems.isEmpty()) return@derivedStateOf masterPage
 
                 val viewportCenter =
@@ -147,7 +146,8 @@ fun ReaderScreen(
                     return@derivedStateOf (layoutInfo.totalItemsCount - 1)
                 }
 
-                return@derivedStateOf centerItem?.index ?: masterPage // changed from 0 to avoid jumping to start
+                return@derivedStateOf centerItem?.index
+                    ?: masterPage // changed from 0 to avoid jumping to start
             } else {
                 pagerState.currentPage
             }
@@ -183,18 +183,33 @@ fun ReaderScreen(
         containerColor = if (isNightMode) Color.Black else Color.White,
         topBar = {
             ReaderTopBar(
-                visible = showControls,
+                visible = showControls && selectedText == null,
                 title = bookTitle,
                 onBack = onBack,
                 onShowNotes = { showNotesSheet = true },
                 onGoToPage = { showSelectPageDialog = true },
-                onHideMenu = {showControls= false})
+                onHideMenu = { showControls = false })
+
+            AnimatedVisibility(
+                visible = selectedText != null,
+                enter = slideInVertically { -it } + fadeIn(),
+                exit = slideOutVertically { -it } + fadeOut(),
+            ) {
+                SelectionControlBar(
+                    onCopy = {
+                        selectedText?.let { clipboardManager.setText(AnnotatedString(it)) }
+                        viewModel.clearAllSelection()
+                    },
+                    onNote = { showNoteDialog = true },
+                    onClose = { viewModel.clearAllSelection() }
+                )
+            }
         },
         bottomBar = {
             FontSizeControl(
                 visible = showControls && isTextMode,
                 fontSize = fontSize,
-                onFontSizeChange = {size -> viewModel.setFontSize(size, masterPage)}
+                onFontSizeChange = { size -> viewModel.setFontSize(size, masterPage) }
             )
         },
         floatingActionButton = {
@@ -401,6 +416,7 @@ fun ReaderScreen(
 
                         if (isVerticalMode) {
                             LazyColumn(
+                                contentPadding = PaddingValues(top = 10.dp),
                                 state = listState,
                                 modifier = Modifier.fillMaxSize(),
                                 userScrollEnabled = isTextMode || globalScale <= 1.01f
@@ -411,6 +427,7 @@ fun ReaderScreen(
                             }
                         } else {
                             HorizontalPager(
+                                contentPadding = PaddingValues(top = 10.dp),
                                 state = pagerState,
                                 userScrollEnabled = isTextMode || globalScale <= 1.01f || isViewportLocked,
                                 beyondViewportPageCount = 1
@@ -421,21 +438,7 @@ fun ReaderScreen(
 
                 }
 
-                AnimatedVisibility(
-                    visible = selectedText != null,
-                    enter = slideInVertically { -it } + fadeIn(),
-                    exit = slideOutVertically { -it } + fadeOut(),
-                    modifier = Modifier.align(Alignment.TopCenter)
-                ) {
-                    SelectionControlBar(
-                        onCopy = {
-                            selectedText?.let { clipboardManager.setText(AnnotatedString(it)) }
-                            viewModel.clearAllSelection()
-                        },
-                        onNote = { showNoteDialog = true },
-                        onClose = { viewModel.clearAllSelection() }
-                    )
-                }
+
             }
         }
     }
@@ -471,6 +474,7 @@ fun ReaderScreen(
                     else pagerState.scrollToPage(masterPage)
                     viewModel.onPageChanged(masterPage)
                     showSelectPageDialog = false
+
                 }
             },
             onDismiss = { showSelectPageDialog = false }
@@ -506,24 +510,29 @@ fun ReaderTopBar(
                 IconButton(onClick = onBack) {
                     Icon(
                         Icons.Rounded.ArrowBackIosNew,
-                        "Back"
+                        "Back", modifier = Modifier.size(20.dp)
                     )
                 }
             },
             actions = {
-                Row{
+                Row {
                     IconButton(
                         onClick = onHideMenu
                     ) {
-                        Icon(Icons.Rounded.Airplay, null)
+                        Icon(
+                            Icons.Rounded.Airplay, null,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                     Box {
                         IconButton(
-                            onClick = { expanded = !expanded }
-                        ) {
+                            onClick = { expanded = !expanded },
+
+                            ) {
                             Icon(
                                 Icons.Default.MoreVert,
-                                null
+                                null,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                         NightLightDropDownMenu(
@@ -535,7 +544,8 @@ fun ReaderTopBar(
                                 leadingIcon = {
                                     Icon(
                                         Icons.Rounded.Draw,
-                                        "Notes"
+                                        "Notes",
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 })
                             DropdownMenuItem(
@@ -544,7 +554,8 @@ fun ReaderTopBar(
                                 leadingIcon = {
                                     Icon(
                                         Icons.Rounded.Signpost,
-                                        null
+                                        null,
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
                             )
@@ -554,20 +565,5 @@ fun ReaderTopBar(
 
             }
         )
-    }
-}
-
-@Composable
-fun MenuController(
-    onToggleMenu: () -> Unit,
-    modifier: Modifier,
-) {
-    SmallFloatingActionButton(
-        onClick = onToggleMenu,
-        modifier = modifier
-            .padding(top = 48.dp, end = 16.dp),
-        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)
-    ) {
-        Icon(Icons.Default.Menu, "Menu")
     }
 }

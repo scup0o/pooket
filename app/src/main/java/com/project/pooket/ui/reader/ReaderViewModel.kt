@@ -331,10 +331,18 @@ class ReaderViewModel @Inject constructor(
 
     fun onScreenSizeReady(size: Size, density: Density) {
         val oldSize = this.screenSize
-        this.screenSize = size
-        this.screenDensity = density
-        if (_isEpub.value && (oldSize != size || epubPages.isEmpty())) {
+
+        val isFirstLoad = epubPages.isEmpty()
+
+        val isRotation = oldSize != null && oldSize.width != size.width
+
+        if (_isEpub.value && (isFirstLoad || isRotation)) {
+            this.screenSize = size
+            this.screenDensity = density
             triggerEpubPagination()
+        } else {
+            this.screenSize = size
+            this.screenDensity = density
         }
     }
 
@@ -575,13 +583,14 @@ class ReaderViewModel @Inject constructor(
     fun setFontSize(size: Float, pageIndex:Int) {
         if (_fontSize.value == size) return
         _fontSize.value = size
+        saveJob?.cancel()
 
-        if (_isEpub.value) {
-            triggerEpubPagination()
-            val uri = currentBookUri ?: return
-            saveJob?.cancel()
+        val uri = currentBookUri ?: return
+        saveJob = viewModelScope.launch{
+            repository.saveFontSize(uri, _fontSize.value)
+            if (_isEpub.value) {
+                triggerEpubPagination()
 
-            saveJob = viewModelScope.launch{
                 val currentTotal = _pageCount.value
                 repository.initTotalPages(uri, currentTotal)
                 onPageChanged(pageIndex)
