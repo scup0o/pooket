@@ -948,4 +948,13 @@ class ReaderViewModel @Inject constructor(
         return point.x >= (rect.left - pad) && point.x <= (rect.right + pad) &&
                 point.y >= (rect.top - pad) && point.y <= (rect.bottom + pad)
     }
+
+    fun getNoteTextBounds(rawText: String, note: NoteEntity): Pair<Int, Int>? {
+        // If it has exact bounds (created in Text/Epub mode), use them
+        if (note.textRangeStart != null && note.textRangeEnd != null) {
+            return note.textRangeStart to note.textRangeEnd
+        }
+        // If bounds are null (created in Image mode), fall back to fuzzy finding
+        return findFuzzyBounds(rawText, note.originalText)
+    }
 }
