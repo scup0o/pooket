@@ -137,7 +137,7 @@ class ReaderViewModel @Inject constructor(
     }
     private val textCache = LruCache<Int, String>(100)
     private val pageCharsCache = LruCache<Int, List<PdfChar>>(50)
-    private val cleanTargetCache = ConcurrentHashMap<String, String>() // Optimization: Cache clean regex strings
+    private val cleanTargetCache = LruCache<String, String>(200)
 
     init {
         PDFBoxResourceLoader.init(app)
@@ -165,7 +165,7 @@ class ReaderViewModel @Inject constructor(
                     pdDocument = null
                     textCache.evictAll()
                     pageCharsCache.evictAll()
-                    cleanTargetCache.clear()
+                    cleanTargetCache.evictAll()
                 } catch (e: Exception) { }
             }
             epubChapters = emptyList()
@@ -196,12 +196,16 @@ class ReaderViewModel @Inject constructor(
             return
         }
         cleanupResources()
-
         currentBookUri = uriString
         _isLoading.value = true
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                val book = repository.getBook(uriString)
+                _initialPage.value = book?.lastPage ?: 0
+                _fontSize.value = book?.fontSize ?: 16f
+                localIsCompleted = book?.isCompleted == true
+
                 val uri = Uri.parse(uriString)
                 val mimeType = app.contentResolver.getType(uri) ?: ""
 
@@ -213,16 +217,10 @@ class ReaderViewModel @Inject constructor(
                     _isEpub.value = true
                     _isTextMode.value = true
                     loadEpubInternal(uri)
-
                     if (screenSize != null) {
                         triggerEpubPagination()
                     }
                 }
-
-                val book = repository.getBook(uriString)
-                _initialPage.value = book?.lastPage ?: 0
-                localIsCompleted = book?.isCompleted == true
-                _fontSize.value = book?.fontSize ?: 16f
 
                 loadNotes(uriString)
 
@@ -378,6 +376,7 @@ class ReaderViewModel @Inject constructor(
             val maxChunkSize = 8000
 
             epubChapters.forEachIndexed { chapterIndex, content ->
+                yield()
                 if (content.isEmpty()) return@forEachIndexed
 
                 var chunkStart = 0
@@ -607,7 +606,30 @@ class ReaderViewModel @Inject constructor(
     fun saveNote(noteContent: String) {
         val uri = currentBookUri ?: return
         viewModelScope.launch {
-            val noteEntity = if (_isTextMode.value || _isEpub.value) {
+            val noteEntity = if (_isEpub.value) {
+                val sel = _textSelection.value
+                // Get the virtual page to find out which chapter we are in
+                val vPage = epubPages.getOrNull(sel?.pageIndex ?: -1)
+
+                if (sel != null && vPage != null && !sel.range.collapsed) {
+                    // Calculate absolute offset within the CHAPTER
+                    // The selection range is relative to the visible block.
+                    // We add the block's start index and the page's start offset.
+                    val absoluteStart = vPage.startOffset + sel.range.start
+                    val absoluteEnd = vPage.startOffset + sel.range.end
+
+                    NoteEntity(
+                        bookUri = uri,
+                        pageIndex = vPage.chapterIndex, // Store CHAPTER index here
+                        originalText = sel.text,
+                        noteContent = noteContent,
+                        rects = emptyList(),
+                        textRangeStart = absoluteStart,
+                        textRangeEnd = absoluteEnd
+                    )
+                } else null
+            }
+            else if (_isTextMode.value) {
                 val sel = _textSelection.value
                 if (sel != null && !sel.range.collapsed) {
                     val rects = if (_isEpub.value) emptyList() else findRectsForText(sel.pageIndex, sel.text)
@@ -638,6 +660,34 @@ class ReaderViewModel @Inject constructor(
                 noteRepository.addNote(noteEntity)
                 clearAllSelection()
             }
+        }
+    }
+
+    fun getEpubPageMetadata(index: Int): EpubVirtualPage? {
+        return epubPages.getOrNull(index)
+    }
+    fun getPageForNote(note: NoteEntity): Int {
+        if (!_isEpub.value) {
+            // PDF Mode: The page index is already correct
+            return note.pageIndex
+        }
+
+        // EPUB Mode: Find the virtual page that contains this chapter and offset
+        val chapterIndex = note.pageIndex
+        val offset = note.textRangeStart ?: 0
+
+        val virtualPageIndex = epubPages.indexOfFirst { page ->
+            page.chapterIndex == chapterIndex &&
+                    offset >= page.startOffset &&
+                    offset < page.endOffset
+        }
+
+        // Fallback: If for some reason the offset isn't found,
+        // jump to the first page of that chapter.
+        return if (virtualPageIndex != -1) {
+            virtualPageIndex
+        } else {
+            epubPages.indexOfFirst { it.chapterIndex == chapterIndex }.coerceAtLeast(0)
         }
     }
 
@@ -678,9 +728,11 @@ class ReaderViewModel @Inject constructor(
     }
 
     private fun getCleanTarget(target: String): String {
-        return cleanTargetCache.getOrPut(target) {
-            target.replace(WHITESPACE_REGEX, "")
-        }
+        val cached = cleanTargetCache.get(target)
+        if (cached != null) return cached
+        val cleaned = target.replace(WHITESPACE_REGEX, "")
+        cleanTargetCache.put(target, cleaned)
+        return cleaned
     }
 
     suspend fun findRectsForText(pageIndex: Int, text: String): List<NormRect> = withContext(Dispatchers.Default) {

@@ -447,18 +447,21 @@ fun ReaderScreen(
         NotesListSheet(
             notes = notes,
             onNoteClick = { note ->
+                val targetPage = viewModel.getPageForNote(note)
                 showNotesSheet = false
                 scope.launch {
-                    masterPage = note.pageIndex
-                    if (isVerticalMode) listState.scrollToItem(masterPage)
-                    else pagerState.scrollToPage(masterPage)
-                    viewModel.onPageChanged(masterPage)
+                    masterPage = targetPage
+                    if (isVerticalMode) {
+                        listState.scrollToItem(targetPage)
+                    } else {
+                        pagerState.scrollToPage(targetPage)
+                    }
+                    viewModel.onPageChanged(targetPage)
                 }
             },
             onDismiss = { showNotesSheet = false }
         )
     }
-
     if (showNoteDialog) {
         NoteInputDialog(
             onDismiss = { showNoteDialog = false },
