@@ -11,17 +11,23 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Note
 import androidx.compose.material.icons.filled.AirlineStops
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Cookie
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.rounded.Airplay
 import androidx.compose.material.icons.rounded.ArrowBackIosNew
 import androidx.compose.material.icons.rounded.Draw
+import androidx.compose.material.icons.rounded.NightsStay
 import androidx.compose.material.icons.rounded.Signpost
+import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -91,11 +97,13 @@ fun ReaderScreen(
     var isInitialized by remember { mutableStateOf(false) }
     var isSwitchingModes by remember { mutableStateOf(false) }
 
-    var isViewportLocked by remember { mutableStateOf(false) }
-    var showControls by remember { mutableStateOf(true) }
-    var showNotesSheet by remember { mutableStateOf(false) }
-    var showNoteDialog by remember { mutableStateOf(false) }
-    var showSelectPageDialog by remember { mutableStateOf(false) }
+    var isViewportLocked by rememberSaveable { mutableStateOf(false) }
+    var showControls by rememberSaveable { mutableStateOf(true) }
+    var showNotesSheet by rememberSaveable { mutableStateOf(false) }
+    var showNoteDialog by rememberSaveable { mutableStateOf(false) }
+    var showSelectPageDialog by rememberSaveable { mutableStateOf(false) }
+    var dropdownExpanded by remember { mutableStateOf(false) }
+    var bookDarkMode by rememberSaveable { mutableStateOf(isNightMode) }
 
     //scroll/pager-state
     val pagerState = rememberPagerState(pageCount = { totalPages })
@@ -180,15 +188,21 @@ fun ReaderScreen(
     }
 
     Scaffold(
-        containerColor = if (isNightMode) Color.Black else Color.White,
+        containerColor = if (bookDarkMode) Color.Black else Color.White,
         topBar = {
             ReaderTopBar(
                 visible = showControls && selectedText == null,
+                dropdownExpanded = dropdownExpanded,
+                bookDarkMode = bookDarkMode,
                 title = bookTitle,
                 onBack = onBack,
                 onShowNotes = { showNotesSheet = true },
-                onGoToPage = { showSelectPageDialog = true },
-                onHideMenu = { showControls = false })
+                onGoToPage = {
+                    showSelectPageDialog = true
+                    dropdownExpanded = false},
+                onHideMenu = { showControls = false },
+                onHideDropdown = {dropdownExpanded = !dropdownExpanded},
+                onToggleBookDarkMode = {bookDarkMode = it})
 
             AnimatedVisibility(
                 visible = selectedText != null,
@@ -217,13 +231,15 @@ fun ReaderScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                if (showControls) {
-                    PageIndicator(
-                        currentPage = masterPage + 1,
-                        totalPages = totalPages,
-                        modifier = Modifier
-                    )
-                }
+                AnimatedVisibility(
+                    visible = showControls,
+                    enter = fadeIn() + scaleIn(initialScale = 0.9f),
+                    exit = fadeOut() + scaleOut(targetScale = 0.9f)
+                ) { PageIndicator(
+                    currentPage = masterPage + 1,
+                    totalPages = totalPages,
+                    modifier = Modifier
+                )}
 
                 ReaderControls(
                     isEpub = isEpub,
@@ -405,7 +421,7 @@ fun ReaderScreen(
                                 pageIndex = index,
                                 viewModel = viewModel,
                                 isVerticalMode = isVerticalMode,
-                                isNightMode = isNightMode,
+                                isNightMode = bookDarkMode,
                                 isTextMode = isTextMode,
                                 isEpub = isEpub,
                                 fontSize = fontSize,
@@ -447,6 +463,7 @@ fun ReaderScreen(
         NotesListSheet(
             notes = notes,
             onNoteClick = { note ->
+                dropdownExpanded = false
                 val targetPage = viewModel.getPageForNote(note)
                 showNotesSheet = false
                 scope.launch {
@@ -489,13 +506,16 @@ fun ReaderScreen(
 @Composable
 fun ReaderTopBar(
     visible: Boolean,
+    dropdownExpanded : Boolean,
+    bookDarkMode : Boolean,
     title: String,
     onBack: () -> Unit,
     onShowNotes: () -> Unit,
     onGoToPage: () -> Unit,
     onHideMenu: () -> Unit,
+    onHideDropdown: () -> Unit,
+    onToggleBookDarkMode: (Boolean) ->Unit,
 ) {
-    var expanded by remember { mutableStateOf(false) }
     AnimatedVisibility(
         visible,
         enter = slideInVertically { -it },
@@ -529,7 +549,7 @@ fun ReaderTopBar(
                     }
                     Box {
                         IconButton(
-                            onClick = { expanded = !expanded },
+                            onClick = onHideDropdown,
 
                             ) {
                             Icon(
@@ -539,7 +559,7 @@ fun ReaderTopBar(
                             )
                         }
                         NightLightDropDownMenu(
-                            expanded = expanded, onDismissRequest = { expanded = false }
+                            expanded = dropdownExpanded, onDismissRequest = onHideDropdown
                         ) {
                             DropdownMenuItem(
                                 text = { Text("Notes") },
@@ -559,6 +579,36 @@ fun ReaderTopBar(
                                         Icons.Rounded.Signpost,
                                         null,
                                         modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text("Night time")
+                                },
+                                onClick = {},
+                                trailingIcon = {
+                                    Switch(
+                                        checked = bookDarkMode,
+                                        onCheckedChange = onToggleBookDarkMode,
+                                        thumbContent = {
+                                            val iconSize = 20.dp
+                                            if (bookDarkMode) Icon(Icons.Filled.AutoAwesome, null, modifier = Modifier.size(iconSize))
+                                            else Icon(Icons.Rounded.WbSunny, null, modifier = Modifier.size(iconSize))
+                                        },
+                                        modifier = Modifier
+                                            .scale(0.7f)
+                                            .requiredSize(width = 40.dp, height = 24.dp),
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = Color.Transparent,
+//                                            checkedThumbColor = Color(0xE249497E),
+                                            checkedTrackColor = Color(0xFF1E1F75),
+                                            checkedIconColor = Color(0xFFCDC7DE),
+                                            uncheckedThumbColor = Color(0xFFFFD600),
+                                            uncheckedTrackColor = Color(0xFF90CAF9),
+                                            uncheckedIconColor = Color(0xFFF57C00),
+                                            uncheckedBorderColor = Color.Transparent
+                                        )
                                     )
                                 }
                             )

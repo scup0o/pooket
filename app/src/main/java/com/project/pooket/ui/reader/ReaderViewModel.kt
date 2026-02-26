@@ -608,19 +608,15 @@ class ReaderViewModel @Inject constructor(
         viewModelScope.launch {
             val noteEntity = if (_isEpub.value) {
                 val sel = _textSelection.value
-                // Get the virtual page to find out which chapter we are in
                 val vPage = epubPages.getOrNull(sel?.pageIndex ?: -1)
 
                 if (sel != null && vPage != null && !sel.range.collapsed) {
-                    // Calculate absolute offset within the CHAPTER
-                    // The selection range is relative to the visible block.
-                    // We add the block's start index and the page's start offset.
                     val absoluteStart = vPage.startOffset + sel.range.start
                     val absoluteEnd = vPage.startOffset + sel.range.end
 
                     NoteEntity(
                         bookUri = uri,
-                        pageIndex = vPage.chapterIndex, // Store CHAPTER index here
+                        pageIndex = vPage.chapterIndex,
                         originalText = sel.text,
                         noteContent = noteContent,
                         rects = emptyList(),
@@ -668,11 +664,11 @@ class ReaderViewModel @Inject constructor(
     }
     fun getPageForNote(note: NoteEntity): Int {
         if (!_isEpub.value) {
-            // PDF Mode: The page index is already correct
+            // PDF Mode
             return note.pageIndex
         }
 
-        // EPUB Mode: Find the virtual page that contains this chapter and offset
+        // EPUB Mode
         val chapterIndex = note.pageIndex
         val offset = note.textRangeStart ?: 0
 
@@ -682,8 +678,7 @@ class ReaderViewModel @Inject constructor(
                     offset < page.endOffset
         }
 
-        // Fallback: If for some reason the offset isn't found,
-        // jump to the first page of that chapter.
+        // Fallback
         return if (virtualPageIndex != -1) {
             virtualPageIndex
         } else {
