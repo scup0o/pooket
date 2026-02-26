@@ -23,3 +23,11 @@
 
 # Jetpack Compose
 -keepattributes SourceFile,LineNumberTable
+
+# Remove all Info, Debug, and Verbose logs in Release builds
+-assumenosideeffects class android.util.Log {
+    public static int i(...);
+    public static int d(...);
+    public static int v(...);
+    public static int e(...);
+}

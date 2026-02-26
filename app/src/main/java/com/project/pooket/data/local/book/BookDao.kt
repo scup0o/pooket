@@ -34,7 +34,7 @@ interface BookDao {
     @Query("UPDATE books SET isCompleted=:isCompleted WHERE uri=:uri")
     suspend fun setCompleteState(isCompleted: Boolean, uri:String)
 
-    @Query("UPDATE books SET totalPages = :total WHERE uri = :uri AND totalPages = 0")
+    @Query("UPDATE books SET totalPages = :total WHERE uri = :uri")
     suspend fun initTotalPages(uri: String, total: Int)
 
     @Query("UPDATE books SET fontSize = :fontSize WHERE uri = :uri")

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
@@ -45,6 +46,7 @@ import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.Signpost
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChipDefaults
@@ -54,6 +56,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import com.project.pooket.ui.common.ModalTitle
+import com.project.pooket.ui.common.NightLightDialog
 
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -78,107 +81,119 @@ fun FilterSortSheet(
     NightLightBottomModal(
         onDismiss = onDismiss,
     ) {
-        ModalTitle(
-            titleText = "Filter & Sort",
-            rightAction = {
-
-                Icon(
-                    Icons.Rounded.Replay,
-                    contentDescription = "Refresh",
-                    tint=MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .clickable(onClick = onRefresh)
-                        .size(25.dp)
-                )
-            }
-        )
         Column(
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(BottomSheetDefaults.windowInsets)
+                .padding(horizontal = 16.dp)
+                .padding(vertical = 30.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            Text(
-                "Filter books by..."
-            )
-            TextButton(
-                onClick = { showSortingPopUp = true },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(25),
-                border = BorderStroke(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                )
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically){
-                        Icon(
-                            Icons.Rounded.Signpost, null
-                        )
-                        Text("Sort by", color = MaterialTheme.colorScheme.onSurface)
-                    }
+            ModalTitle(
+                titleText = "Filter & Sort",
+                rightAction = {
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            tempSortOption.label
-                        )
-                        Icon(
-                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            null,
-                            tint = MaterialTheme.colorScheme.tertiary
-                        )
-                    }
-                }
-            }
-        }
-
-        Column() {
-            Text("Book status")
-            LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-                items(BookCompletedFilter.entries) { filter ->
-                    val isSelected = tempFilters.contains(filter)
-                    FilterChip(
-                        colors = FilterChipDefaults.filterChipColors(),
-                        selected = isSelected,
-                        onClick = {
-                            tempFilters = if (isSelected) {
-                                tempFilters - filter
-                            } else {
-                                tempFilters + filter
-                            }
-                        },
-                        label = { Text(filter.label) },
-                        leadingIcon = if (isSelected) {
-                            {
-                                Icon(
-                                    imageVector = Icons.Rounded.Check,
-                                    contentDescription = null,
-                                )
-                            }
-                        } else null
+                    Icon(
+                        Icons.Rounded.Replay,
+                        contentDescription = "Refresh",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clickable(onClick = onRefresh)
+                            .size(25.dp)
                     )
                 }
-            }
-        }
+            )
+            Column(
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    "Filter books by..."
+                )
+                TextButton(
+                    onClick = { showSortingPopUp = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(25),
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Rounded.Signpost, null
+                            )
+                            Text("Sort by", color = MaterialTheme.colorScheme.onSurface)
+                        }
 
-
-        Row(horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
-            Button(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp),
-                onClick = {
-                    onApply(tempSortOption, tempFilters)
-                    onDismiss()
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                tempSortOption.label
+                            )
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                null,
+                                tint = MaterialTheme.colorScheme.tertiary
+                            )
+                        }
+                    }
                 }
-            ) { Text("Start filtering") }
+            }
+
+            Column() {
+                Text("Book status")
+                LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    items(BookCompletedFilter.entries) { filter ->
+                        val isSelected = tempFilters.contains(filter)
+                        FilterChip(
+                            colors = FilterChipDefaults.filterChipColors(),
+                            selected = isSelected,
+                            onClick = {
+                                tempFilters = if (isSelected) {
+                                    tempFilters - filter
+                                } else {
+                                    tempFilters + filter
+                                }
+                            },
+                            label = { Text(filter.label) },
+                            leadingIcon = if (isSelected) {
+                                {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Check,
+                                        contentDescription = null,
+                                    )
+                                }
+                            } else null
+                        )
+                    }
+                }
+            }
+
+
+            Row(horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    onClick = {
+                        onApply(tempSortOption, tempFilters)
+                        onDismiss()
+                    }
+                ) { Text("Start filtering") }
+            }
         }
 
     }
@@ -200,41 +215,42 @@ fun SortOptionPopUp(
     onDismiss: () -> Unit,
     onSelect: (BookSortOption) -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Sort Books By") },
-        text = {
-            Column(Modifier.selectableGroup()) {
-                BookSortOption.entries.forEach { option ->
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                            .selectable(
-                                selected = (option == currentSortOption),
-                                onClick = { onSelect(option) },
-                                role = Role.RadioButton
-                            )
-                            .padding(horizontal = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
+    NightLightDialog(
+        onDismiss
+    ) {
+        Column(Modifier.selectableGroup()) {
+            BookSortOption.entries.forEach { option ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .selectable(
                             selected = (option == currentSortOption),
-                            onClick = null
+                            onClick = { onSelect(option) },
+                            role = Role.RadioButton
                         )
-                        Text(
-                            text = option.label,
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                    }
+                        .padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    RadioButton(
+                        selected = (option == currentSortOption),
+                        onClick = null
+                    )
+                    Text(
+                        text = option.label,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
                 }
             }
-        },
-        confirmButton = {},
-        dismissButton = {
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Absolute.Right
+        ) {
             TextButton(onClick = onDismiss) {
                 Text("Close")
             }
         }
-    )
+    }
 }

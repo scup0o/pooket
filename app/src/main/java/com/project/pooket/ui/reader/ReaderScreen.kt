@@ -199,10 +199,11 @@ fun ReaderScreen(
                 onShowNotes = { showNotesSheet = true },
                 onGoToPage = {
                     showSelectPageDialog = true
-                    dropdownExpanded = false},
+                    dropdownExpanded = false
+                },
                 onHideMenu = { showControls = false },
-                onHideDropdown = {dropdownExpanded = !dropdownExpanded},
-                onToggleBookDarkMode = {bookDarkMode = it})
+                onHideDropdown = { dropdownExpanded = !dropdownExpanded },
+                onToggleBookDarkMode = { bookDarkMode = it })
 
             AnimatedVisibility(
                 visible = selectedText != null,
@@ -221,7 +222,7 @@ fun ReaderScreen(
         },
         bottomBar = {
             FontSizeControl(
-                visible = showControls && isTextMode,
+                visible = showControls && isTextMode && isInitialized,
                 fontSize = fontSize,
                 onFontSizeChange = { size -> viewModel.setFontSize(size, masterPage) }
             )
@@ -232,18 +233,20 @@ fun ReaderScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 AnimatedVisibility(
-                    visible = showControls,
+                    visible = showControls && isInitialized,
                     enter = fadeIn() + scaleIn(initialScale = 0.9f),
                     exit = fadeOut() + scaleOut(targetScale = 0.9f)
-                ) { PageIndicator(
-                    currentPage = masterPage + 1,
-                    totalPages = totalPages,
-                    modifier = Modifier
-                )}
+                ) {
+                    PageIndicator(
+                        currentPage = masterPage + 1,
+                        totalPages = totalPages,
+                        modifier = Modifier
+                    )
+                }
 
                 ReaderControls(
                     isEpub = isEpub,
-                    visible = showControls,
+                    visible = showControls && isInitialized,
                     isVertical = isVerticalMode,
                     isTextMode = isTextMode,
                     isLocked = isViewportLocked,
@@ -476,7 +479,8 @@ fun ReaderScreen(
                     viewModel.onPageChanged(targetPage)
                 }
             },
-            onDismiss = { showNotesSheet = false }
+            onDismiss = { showNotesSheet = false },
+            isEpub = isEpub
         )
     }
     if (showNoteDialog) {
@@ -506,15 +510,15 @@ fun ReaderScreen(
 @Composable
 fun ReaderTopBar(
     visible: Boolean,
-    dropdownExpanded : Boolean,
-    bookDarkMode : Boolean,
+    dropdownExpanded: Boolean,
+    bookDarkMode: Boolean,
     title: String,
     onBack: () -> Unit,
     onShowNotes: () -> Unit,
     onGoToPage: () -> Unit,
     onHideMenu: () -> Unit,
     onHideDropdown: () -> Unit,
-    onToggleBookDarkMode: (Boolean) ->Unit,
+    onToggleBookDarkMode: (Boolean) -> Unit,
 ) {
     AnimatedVisibility(
         visible,
@@ -586,15 +590,23 @@ fun ReaderTopBar(
                                 text = {
                                     Text("Night time")
                                 },
-                                onClick = {},
+                                onClick = { onToggleBookDarkMode(!bookDarkMode) },
                                 trailingIcon = {
                                     Switch(
                                         checked = bookDarkMode,
                                         onCheckedChange = onToggleBookDarkMode,
                                         thumbContent = {
                                             val iconSize = 20.dp
-                                            if (bookDarkMode) Icon(Icons.Filled.AutoAwesome, null, modifier = Modifier.size(iconSize))
-                                            else Icon(Icons.Rounded.WbSunny, null, modifier = Modifier.size(iconSize))
+                                            if (bookDarkMode) Icon(
+                                                Icons.Filled.AutoAwesome,
+                                                null,
+                                                modifier = Modifier.size(iconSize)
+                                            )
+                                            else Icon(
+                                                Icons.Rounded.WbSunny,
+                                                null,
+                                                modifier = Modifier.size(iconSize)
+                                            )
                                         },
                                         modifier = Modifier
                                             .scale(0.7f)

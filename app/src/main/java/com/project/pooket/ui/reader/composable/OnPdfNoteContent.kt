@@ -50,24 +50,14 @@ fun NoteContentDialog(content: String, onDismiss: () -> Unit) {
     NightLightDialog(
         onDismissRequest = onDismiss
     ) {
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Absolute.Right,
-        ){
-                Icon(
-                    Icons.Rounded.Close, null,
-                    modifier = Modifier.clickable(onClick = onDismiss).padding(bottom=5.dp, end= 5.dp)
-                )
-
-
-        }
         TextField(
             value = content,
             onValueChange = {},
             readOnly = true,
             maxLines = 10,
             shape = RoundedCornerShape(10.dp),
+            colors = TextFieldDefaults.colors(
+            )
             )
     }
 }

@@ -45,7 +45,7 @@ fun ContinueReadingCard(book: BookEntity, onClick: () -> Unit, modifier: Modifie
         modifier = modifier
             .fillMaxWidth()
     ) {
-        Box(){
+        Box() {
             Row(Modifier.fillMaxSize()) {
                 Column(
                     modifier = Modifier
@@ -58,20 +58,20 @@ fun ContinueReadingCard(book: BookEntity, onClick: () -> Unit, modifier: Modifie
 
                         )
                     )
-                        Text(
-                            book.title,
-                            style = MaterialTheme.typography.titleSmall,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-
+                    Text(
+                        book.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
 
 
                 }
                 BookCover(
                     coverPath = book.coverImagePath,
                     title = book.title,
-                    modifier = Modifier.aspectRatio(0.7f)
+                    modifier = Modifier
+                        .aspectRatio(0.7f)
                         .fillMaxHeight(),
                 )
             }
@@ -80,6 +80,9 @@ fun ContinueReadingCard(book: BookEntity, onClick: () -> Unit, modifier: Modifie
                 if (book.totalPages > 0) (book.lastPage.toFloat() / (book.totalPages - 1))
                 else 0f
             }
+            println(book.lastPage)
+            println(book.totalPages)
+            println(progress)
 
             if (progress > 0) {
                 LinearProgressIndicator(

@@ -344,7 +344,7 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    private fun triggerEpubPagination() {
+    private fun triggerEpubPagination(pageIndex: Int? = null) {
         val w = screenSize?.width?.toInt() ?: return
         val h = screenSize?.height?.toInt() ?: return
         val d = screenDensity ?: return
@@ -418,6 +418,10 @@ class ReaderViewModel @Inject constructor(
             epubPages = newPages
             _pageCount.value = newPages.size
             _isLoading.value = false
+
+            if (pageIndex!=null) {
+                onPageChanged(pageIndex, true)
+            }
         }
     }
 
@@ -551,7 +555,7 @@ class ReaderViewModel @Inject constructor(
         clearAllSelection()
     }
 
-    fun onPageChanged(pageIndex: Int) {
+    fun onPageChanged(pageIndex: Int, updateCurrentTotal : Boolean = false) {
         clearAllSelection()
         val uri = currentBookUri ?: return
         saveJob?.cancel()
@@ -561,7 +565,9 @@ class ReaderViewModel @Inject constructor(
 
             repository.saveProgress(uri, pageIndex)
             repository.saveFontSize(uri, _fontSize.value)
+
             val total = _pageCount.value
+            if (updateCurrentTotal) repository.initTotalPages(uri, total)
             if (total > 0) {
                 val shouldBeCompleted = (pageIndex >= total - 1)
                 if (localIsCompleted != shouldBeCompleted) {
@@ -588,11 +594,9 @@ class ReaderViewModel @Inject constructor(
         saveJob = viewModelScope.launch{
             repository.saveFontSize(uri, _fontSize.value)
             if (_isEpub.value) {
-                triggerEpubPagination()
+                triggerEpubPagination(pageIndex)
 
-                val currentTotal = _pageCount.value
-                repository.initTotalPages(uri, currentTotal)
-                onPageChanged(pageIndex)
+
             }
         }
     }

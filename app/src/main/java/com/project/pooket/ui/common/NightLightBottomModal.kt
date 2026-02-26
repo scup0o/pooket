@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -24,7 +25,8 @@ import com.project.pooket.core.nightlight.NightLightOverlay
 fun NightLightBottomModal(
     modifier: Modifier = Modifier,
     onDismiss: () -> Unit,
-    content: @Composable ColumnScope.() -> Unit
+    maxHeightFraction: Float? = null,
+    content: @Composable () -> Unit,
 ) {
     val nightLightConfig = LocalNightLightConfig.current
 
@@ -34,18 +36,15 @@ fun NightLightBottomModal(
         contentWindowInsets = { WindowInsets(0, 0, 0, 0) }
     ) {
         Box(
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (maxHeightFraction!=null) Modifier.fillMaxHeight(maxHeightFraction)
+                    else Modifier
+                )
         ) {
-            Column(
-                modifier = modifier
-                    .fillMaxWidth()
-                    .windowInsetsPadding(BottomSheetDefaults.windowInsets)
-                    .padding(horizontal = 16.dp)
-                    .padding(vertical = 30.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp)
-            ) {
-                content()
-            }
+            content()
+
             NightLightOverlay(
                 modifier = Modifier.matchParentSize(),
                 isEnabled = nightLightConfig.isEnabled,
