@@ -71,6 +71,7 @@ class ReaderViewModel @Inject constructor(
     private var fileDescriptor: ParcelFileDescriptor? = null
     private var pdDocument: PDDocument? = null
     private var saveJob: Job? = null
+    private var loadingJob: Job? = null
 
     // EPUB specific state
     private val _isEpub = MutableStateFlow(false)
@@ -132,8 +133,14 @@ class ReaderViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
 
     // cache
-    private val bitmapCache = object : LruCache<Int, Bitmap>((Runtime.getRuntime().maxMemory() / 1024 / 4).toInt()) {
+    private val bitmapCache = object : LruCache<Int, Bitmap>((Runtime.getRuntime().maxMemory() / 1024 / 8).toInt()) {
         override fun sizeOf(key: Int, value: Bitmap): Int = value.byteCount / 1024
+
+        override fun entryRemoved(evicted: Boolean, key: Int?, oldValue: Bitmap?, newValue: Bitmap?) {
+            if (oldValue != null && !oldValue.isRecycled) {
+                oldValue.recycle()
+            }
+        }
     }
     private val textCache = LruCache<Int, String>(100)
     private val pageCharsCache = LruCache<Int, List<PdfChar>>(50)
@@ -144,33 +151,40 @@ class ReaderViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        loadingJob?.cancel()
+        paginationJob?.cancel()
+        saveJob?.cancel()
+
+        bitmapCache.evictAll()
+        textCache.evictAll()
+        pageCharsCache.evictAll()
+
+        val images = _epubImages.value.values.toList()
+        _epubImages.value = emptyMap()
+        images.forEach { if (!it.isRecycled) it.recycle() }
+
         super.onCleared()
         cleanupResources()
     }
 
     private fun cleanupResources() {
-        CoroutineScope(Dispatchers.IO + NonCancellable).launch {
-            renderMutex.withLock {
-                try {
-                    _pdfRenderer.value?.close()
-                    _pdfRenderer.value = null
-                    fileDescriptor?.close()
-                    fileDescriptor = null
-                    bitmapCache.evictAll()
-                } catch (e: Exception) { Log.e("ReaderVM", "Cleanup error", e) }
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                withTimeout(2000) {
+                    renderMutex.withLock {
+                        _pdfRenderer.value?.close()
+                        _pdfRenderer.value = null
+                        fileDescriptor?.close()
+                        fileDescriptor = null
+                    }
+                    pdfBoxMutex.withLock {
+                        pdDocument?.close()
+                        pdDocument = null
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ReaderVM", "Cleanup timed out or failed", e)
             }
-            pdfBoxMutex.withLock {
-                try {
-                    pdDocument?.close()
-                    pdDocument = null
-                    textCache.evictAll()
-                    pageCharsCache.evictAll()
-                    cleanTargetCache.evictAll()
-                } catch (e: Exception) { }
-            }
-            epubChapters = emptyList()
-            epubPages = emptyList()
-            _epubImages.value = emptyMap()
         }
     }
 
@@ -195,11 +209,15 @@ class ReaderViewModel @Inject constructor(
             _isLoading.value = false
             return
         }
-        cleanupResources()
+
+        loadingJob?.cancel()
+        paginationJob?.cancel()
+
         currentBookUri = uriString
         _isLoading.value = true
 
-        viewModelScope.launch(Dispatchers.IO) {
+        loadingJob = viewModelScope.launch(Dispatchers.IO) {
+            performFullCleanup()
             try {
                 val book = repository.getBook(uriString)
                 _initialPage.value = book?.lastPage ?: 0
@@ -217,7 +235,7 @@ class ReaderViewModel @Inject constructor(
                     _isEpub.value = true
                     _isTextMode.value = true
                     loadEpubInternal(uri)
-                    if (screenSize != null) {
+                    if (isActive && screenSize != null) {
                         triggerEpubPagination()
                     }
                 }
@@ -231,6 +249,21 @@ class ReaderViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.e("ReaderVM", "Direct load failed", e)
                 _isLoading.value = false
+            }
+        }
+    }
+
+    private suspend fun performFullCleanup() {
+        renderMutex.withLock {
+            pdfBoxMutex.withLock {
+                try {
+                    _pdfRenderer.value?.close()
+                    _pdfRenderer.value = null
+                    fileDescriptor?.close()
+                    fileDescriptor = null
+                    pdDocument?.close()
+                    pdDocument = null
+                } catch (e: Exception) { Log.e("ReaderVM", "Cleanup error", e) }
             }
         }
     }
@@ -258,73 +291,79 @@ class ReaderViewModel @Inject constructor(
         return inSampleSize
     }
 
-    private suspend fun loadEpubInternal(uri: Uri) {
+    private suspend fun loadEpubInternal(uri: Uri) = withContext(Dispatchers.IO) {
         val stream = app.contentResolver.openInputStream(uri) ?: throw Exception("Cannot open EPUB")
         val book = EpubReader().readEpub(stream)
 
         val images = mutableMapOf<String, Bitmap>()
-        book.resources.resourceMap.forEach { (path, res) ->
-            if (res.mediaType.toString().startsWith("image/")) {
-                try {
-                    val data = res.data
-                    val options = BitmapFactory.Options().apply {
-                        inJustDecodeBounds = true
-                        BitmapFactory.decodeByteArray(data, 0, data.size, this)
-                        inSampleSize = calculateInSampleSize(this, 1080, 1920)
-                        inJustDecodeBounds = false
-                        inPreferredConfig = Bitmap.Config.RGB_565
-                    }
-                    val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size, options)
 
-                    if (bitmap != null) {
-                        images[path] = bitmap
-                        val filename = path.substringAfterLast("/")
-                        if (filename != path) images[filename] = bitmap
+        try {
+            book.resources.resourceMap.forEach { (path, res) ->
+                ensureActive()
+
+                if (res.mediaType.toString().startsWith("image/")) {
+                    try {
+                        val data = res.data
+                        val options = BitmapFactory.Options().apply {
+                            inJustDecodeBounds = true
+                            BitmapFactory.decodeByteArray(data, 0, data.size, this)
+                            inSampleSize = calculateInSampleSize(this, 1080, 1920)
+                            inJustDecodeBounds = false
+                            inPreferredConfig = Bitmap.Config.RGB_565
+                        }
+                        val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size, options)
+
+                        if (bitmap != null) {
+                            images[path] = bitmap
+                            val filename = path.substringAfterLast("/")
+                            if (filename != path) images[filename] = bitmap
+                        }
+                    } catch (e: Exception) { }
+                }
+            }
+
+            _epubImages.value = images
+
+            val chapters = mutableListOf<AnnotatedString>()
+            book.spine.spineReferences.forEach { ref ->
+                ensureActive()
+                try {
+                    val html = String(ref.resource.data, Charsets.UTF_8)
+                    val doc = Jsoup.parse(html)
+
+                    doc.select("title, head, script, style, nav, audio, video").remove()
+                    doc.select("img").forEach { img ->
+                        val src = img.attr("src")
+                        val filename = src.substringAfterLast("/")
+                        img.replaceWith(TextNode("[IMAGE:$filename]"))
+                    }
+
+                    val settings = Document.OutputSettings()
+                    settings.prettyPrint(false)
+                    doc.outputSettings(settings)
+
+                    doc.select("br").before("\\n")
+                    doc.select("p").before("\\n")
+                    doc.select("h1, h2, h3, h4, h5, h6").before("\\n\\n")
+
+                    val cleanText = doc.body().text().replace("\\n", "\n").trim() ?: ""
+
+                    val hasImage = cleanText.contains("[IMAGE:")
+
+                    val isJunk = !hasImage && (cleanText.isEmpty() || (cleanText.length < 20))
+
+                    if (!isJunk) {
+                        chapters.add(AnnotatedString(cleanText))
                     }
                 } catch (e: Exception) {
-                    Log.e("ReaderVM", "Failed to decode image $path", e)
+                    Log.e("ReaderVM", "Error processing EPUB chapter", e)
                 }
             }
+
+            epubChapters = chapters} catch (e: CancellationException) {
+            images.values.forEach { it.recycle() }
+            throw e
         }
-        _epubImages.value = images
-
-        val chapters = mutableListOf<AnnotatedString>()
-
-        book.spine.spineReferences.forEach { ref ->
-            try {
-                val html = String(ref.resource.data, Charsets.UTF_8)
-                val doc = Jsoup.parse(html)
-
-                doc.select("title, head, script, style, nav, audio, video").remove()
-                doc.select("img").forEach { img ->
-                    val src = img.attr("src")
-                    val filename = src.substringAfterLast("/")
-                    img.replaceWith(TextNode("[IMAGE:$filename]"))
-                }
-
-                val settings = Document.OutputSettings()
-                settings.prettyPrint(false)
-                doc.outputSettings(settings)
-
-                doc.select("br").before("\\n")
-                doc.select("p").before("\\n")
-                doc.select("h1, h2, h3, h4, h5, h6").before("\\n\\n")
-
-                val cleanText = doc.body().text().replace("\\n", "\n").trim() ?: ""
-
-                val hasImage = cleanText.contains("[IMAGE:")
-
-                val isJunk = !hasImage && (cleanText.isEmpty() || (cleanText.length < 20))
-
-                if (!isJunk) {
-                    chapters.add(AnnotatedString(cleanText))
-                }
-            } catch (e: Exception) {
-                Log.e("ReaderVM", "Error processing EPUB chapter", e)
-            }
-        }
-
-        epubChapters = chapters
     }
 
     fun onScreenSizeReady(size: Size, density: Density) {
@@ -376,12 +415,14 @@ class ReaderViewModel @Inject constructor(
             val maxChunkSize = 8000
 
             epubChapters.forEachIndexed { chapterIndex, content ->
+                ensureActive()
                 yield()
                 if (content.isEmpty()) return@forEachIndexed
 
                 var chunkStart = 0
 
                 while (chunkStart < content.length) {
+                    ensureActive()
                     var chunkEnd = minOf(chunkStart + maxChunkSize, content.length)
                     if (chunkEnd < content.length) {
                         while (chunkEnd > chunkStart && !content[chunkEnd].isWhitespace()) {
@@ -438,8 +479,10 @@ class ReaderViewModel @Inject constructor(
 
         val renderer = _pdfRenderer.value ?: return@withContext null
         bitmapCache.get(index)?.let { return@withContext it }
+        ensureActive()
 
         renderMutex.withLock {
+            ensureActive()
             bitmapCache.get(index)?.let { return@withLock it }
 
             var page: PdfRenderer.Page? = null
@@ -475,7 +518,10 @@ class ReaderViewModel @Inject constructor(
 
         textCache.get(index)?.let { return@withContext it }
 
+        ensureActive()
+
         pdfBoxMutex.withLock {
+            ensureActive()
             yield()
             textCache.get(index)?.let { return@withLock it }
             ensurePdDocumentLoaded() ?: return@withLock ""

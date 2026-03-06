@@ -18,6 +18,16 @@
 -keep class com.tom_roush.pdfbox.util.** { *; }
 -dontwarn com.tom_roush.pdfbox.**
 
+#
+## EPUBLIB & JSOUP
+#-keep class nl.siegmann.epublib.** { *; }
+#-dontwarn nl.siegmann.epublib.**
+#-dontwarn org.slf4j.**
+#-dontwarn org.xmlpull.v1.**
+#
+#-keep class org.jsoup.** { *; }
+#-dontwarn org.jsoup.**
+
 #Room
 -dontwarn androidx.room.paging.**
 

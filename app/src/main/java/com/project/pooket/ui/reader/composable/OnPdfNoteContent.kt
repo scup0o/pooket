@@ -58,7 +58,7 @@ fun NoteContentDialog(content: String, onDismiss: () -> Unit) {
             shape = RoundedCornerShape(10.dp),
             colors = TextFieldDefaults.colors(
             )
-            )
+        )
     }
 }
 
@@ -92,12 +92,13 @@ fun NoteInputDialog(initialText: String = "", onDismiss: () -> Unit, onConfirm: 
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Absolute.Right
-        ){
+        ) {
             TextButton(onClick = onDismiss) {
                 Text("Discard")
             }
             TextButton(
-                onClick = { onConfirm(text)
+                onClick = {
+                    onConfirm(text)
                 }) {
                 Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     Text("Jot down")
@@ -105,7 +106,8 @@ fun NoteInputDialog(initialText: String = "", onDismiss: () -> Unit, onConfirm: 
                         Icons.Rounded.Brush, null,
                         modifier = Modifier.size(18.dp)
                     )
-                }}
+                }
             }
+        }
     }
 }

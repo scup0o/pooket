@@ -49,7 +49,6 @@ import com.project.pooket.ui.reader.ReaderViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-// Theme Colors
 private val PurpleHandle = Color(0xFF3A1F79)
 private val PurpleSelection = Color(0x667C54D9)
 private val NoteHighlight = Color(0x66FFEB3B)
@@ -79,7 +78,7 @@ private object PageContentCache {
 @Composable
 fun BookPageItem(
     pageIndex: Int, viewModel: ReaderViewModel, isVerticalMode: Boolean, isNightMode: Boolean,
-    isTextMode: Boolean, isEpub: Boolean, fontSize: Float, currentZoom: () -> Float, pageNotes: List<NoteEntity>
+    isTextMode: Boolean, isEpub: Boolean, fontSize: Float, currentZoom: () -> Float,showControl : Boolean?=false, pageNotes: List<NoteEntity>
 ) {
     val context = LocalContext.current
     var clickedNoteContent by remember { mutableStateOf<String?>(null) }
@@ -106,6 +105,7 @@ private fun EpubPage(
     pageIndex: Int, viewModel: ReaderViewModel, isNightMode: Boolean, isVerticalMode: Boolean,
     fontSize: Float, allNotes: List<NoteEntity>, onNoteClick: (String) -> Unit
 ) {
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current // ADDED: Required to clear stuck selection cursors
     val vPage = remember(pageIndex, fontSize) { viewModel.getEpubPageMetadata(pageIndex) }
     var processedData by remember(pageIndex, fontSize) {
         mutableStateOf(PageContentCache.get(viewModel, pageIndex, fontSize, allNotes))
@@ -156,7 +156,9 @@ private fun EpubPage(
     val globalTextSelection by viewModel.textSelection.collectAsStateWithLifecycle()
 
     if (processedData == null) {
-        Box(Modifier.fillMaxWidth().height(LocalConfiguration.current.screenHeightDp.dp - 100.dp))
+        Box(Modifier
+            .fillMaxWidth()
+            .height(LocalConfiguration.current.screenHeightDp.dp - 100.dp))
         return
     }
 
@@ -164,7 +166,7 @@ private fun EpubPage(
     val textStates = remember(data) { mutableStateMapOf<Int, TextFieldValue>().apply { putAll(data.textStates) } }
     var activeBlockId by remember { mutableStateOf<Int?>(null) }
 
-    val onTextChangeHandler = remember(pageIndex, allNotes, vPage) {
+    val onTextChangeHandler = remember(pageIndex, allNotes, vPage, textStates) {
         { uid: Int, nv: TextFieldValue, el: EpubElement ->
             textStates[uid] = nv
             if (!nv.selection.collapsed) {
@@ -182,8 +184,9 @@ private fun EpubPage(
         }
     }
 
-    LaunchedEffect(globalTextSelection) {
+    LaunchedEffect(globalTextSelection, textStates) {
         if (globalTextSelection == null) {
+            focusManager.clearFocus()
             activeBlockId?.let { id -> textStates[id] = textStates[id]?.copy(selection = TextRange.Zero) ?: TextFieldValue() }
             activeBlockId = null
         }
@@ -195,11 +198,19 @@ private fun EpubPage(
         override fun hide() {}
         override fun showMenu(r: Rect, copy: (() -> Unit)?, p: (() -> Unit)?, cu: (() -> Unit)?, s: (() -> Unit)?) {}
     }, LocalTextSelectionColors provides selectionColors) {
-        val pageModifier = Modifier.fillMaxSize().padding(horizontal = 16.dp).pointerInput(Unit) { detectTapGestures { viewModel.clearAllSelection() } }
+
+        val pageModifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+            .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus(); viewModel.clearAllSelection() } }
+
         if (!isVerticalMode) {
-            LazyColumn(modifier = pageModifier, contentPadding = PaddingValues(vertical = 24.dp)) {
+            LazyColumn(modifier = pageModifier, contentPadding = PaddingValues(top = 24.dp)) {
                 items(items = data.elements, key = { it.id }) { element ->
-                    EpubElementItem(element, fontSize, isNightMode, textStates[if (element is EpubElement.TextBlock) element.uid else -1], epubImages) { uid, nv -> onTextChangeHandler(uid, nv, element) }
+                    EpubElementItem(element, fontSize, isNightMode, textStates[if (element is EpubElement.TextBlock) element.uid else -1], epubImages, ) { uid, nv -> onTextChangeHandler(uid, nv, element) }
+                }
+                item{
+                    Spacer(modifier = Modifier.height(120.dp))
                 }
             }
         } else {
@@ -209,6 +220,32 @@ private fun EpubPage(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun EpubElementItem( el: EpubElement, fs: Float, isNm: Boolean, ts: TextFieldValue?, imgs: Map<String, Bitmap>, onTc: (Int, TextFieldValue) -> Unit) {
+    when (el) {
+        is EpubElement.TextBlock -> {
+            BasicTextField(
+                value = ts ?: TextFieldValue(),
+                onValueChange = { onTc(el.uid, it) },
+                readOnly = true,
+                textStyle = TextStyle(
+                    fontSize = fs.sp,
+                    lineHeight = (fs * 1.5).sp,
+                    color = if (isNm) Color(0xFFD0D0D0) else Color.Black,
+                    textAlign = TextAlign.Justify,
+                    fontFamily = FontFamily.Serif
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 2.dp)
+            )
+        }
+        is EpubElement.ImageBlock -> imgs[el.path]?.let { Image(bitmap = it.asImageBitmap(), contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp)) }
     }
 }
 
@@ -231,7 +268,9 @@ private fun PdfImagePage(
     val currentRectsMap by rememberUpdatedState(noteRectsMap)
 
     if (bitmap == null) {
-        Box(Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        Box(Modifier
+            .fillMaxWidth()
+            .height(400.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         return
     }
 
@@ -252,18 +291,38 @@ private fun PdfImagePage(
                     val h = size.height
                     noteRectsMap.forEach { (_, rects) ->
                         rects.forEach { r ->
-                            drawRect(NoteHighlight, Offset(r.left * w, r.top * h), Size((r.right - r.left) * w, (r.bottom - r.top) * h))
+                            drawRect(
+                                NoteHighlight,
+                                Offset(r.left * w, r.top * h),
+                                Size((r.right - r.left) * w, (r.bottom - r.top) * h)
+                            )
                         }
                     }
                     selectionState?.takeIf { it.pageIndex == pageIndex }?.let { sel ->
                         sel.rects.forEach { r ->
-                            drawRect(PurpleSelection, Offset(r.left * w, r.top * h), Size((r.right - r.left) * w, (r.bottom - r.top) * h))
+                            drawRect(
+                                PurpleSelection,
+                                Offset(r.left * w, r.top * h),
+                                Size((r.right - r.left) * w, (r.bottom - r.top) * h)
+                            )
                         }
                         if (sel.rects.isNotEmpty()) {
                             val sorted = sel.rects.sortedBy { it.top }
                             val rad = 9.dp.toPx() / currentZoom()
-                            drawAndroidSelectionHandle(sorted.first().left * w, sorted.first().bottom * h, rad, true, PurpleHandle)
-                            drawAndroidSelectionHandle(sorted.last().right * w, sorted.last().bottom * h, rad, false, PurpleHandle)
+                            drawAndroidSelectionHandle(
+                                sorted.first().left * w,
+                                sorted.first().bottom * h,
+                                rad,
+                                true,
+                                PurpleHandle
+                            )
+                            drawAndroidSelectionHandle(
+                                sorted.last().right * w,
+                                sorted.last().bottom * h,
+                                rad,
+                                false,
+                                PurpleHandle
+                            )
                         }
                     }
                 }
@@ -360,7 +419,10 @@ private fun PdfTextPage(
         override fun hide() {}
         override fun showMenu(rect: Rect, onCopyRequested: (() -> Unit)?, onPasteRequested: (() -> Unit)?, onCutRequested: (() -> Unit)?, onSelectAllRequested: (() -> Unit)?) {}
     }) {
-        Box(modifier = Modifier.fillMaxWidth().padding(16.dp).then(if (!isVerticalMode) Modifier.verticalScroll(rememberScrollState()) else Modifier)) {
+        Box(modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp)
+            .then(if (!isVerticalMode) Modifier.verticalScroll(rememberScrollState()) else Modifier)) {
             if (textContent == null) CircularProgressIndicator(Modifier.align(Alignment.Center))
             else BasicTextField(
                 value = textFieldValue,
@@ -382,13 +444,6 @@ private fun PdfTextPage(
     }
 }
 
-@Composable
-private fun EpubElementItem(el: EpubElement, fs: Float, isNm: Boolean, ts: TextFieldValue?, imgs: Map<String, Bitmap>, onTc: (Int, TextFieldValue) -> Unit) {
-    when (el) {
-        is EpubElement.TextBlock -> BasicTextField(value = ts ?: TextFieldValue(), onValueChange = { onTc(el.uid, it) }, readOnly = true, textStyle = TextStyle(fontSize = fs.sp, lineHeight = (fs * 1.5).sp, color = if (isNm) Color(0xFFD0D0D0) else Color.Black, textAlign = TextAlign.Justify, fontFamily = FontFamily.Serif), modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp))
-        is EpubElement.ImageBlock -> imgs[el.path]?.let { Image(bitmap = it.asImageBitmap(), contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)) }
-    }
-}
 
 fun DrawScope.drawAndroidSelectionHandle(x: Float, y: Float, radius: Float, isLeft: Boolean, color: Color) {
     val path = Path().apply {
