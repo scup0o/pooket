@@ -25,6 +25,7 @@ import com.project.pooket.core.navigation.FloatingMenuButton
 import com.project.pooket.core.nightlight.LocalNightLightConfig
 import com.project.pooket.core.theme.AppThemeConfig
 import com.project.pooket.data.local.setting.DisplaySettingsRepository
+import com.project.pooket.ui.common.DrawerIconButton
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,8 +39,14 @@ fun SettingMainScreen(
 ) {
     val nightLightConfig = LocalNightLightConfig.current
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Setting") }) }
-    ) { innerPadding ->
+        topBar = {
+            TopAppBar(
+                title = { Text("") },
+                navigationIcon = { DrawerIconButton(onOpenDrawer) }
+            )
+        }
+    ){
+     innerPadding ->
         Box(modifier = Modifier
             .fillMaxSize()
             .padding(
@@ -73,11 +80,7 @@ fun SettingMainScreen(
                     }
                 }
             }
-            FloatingMenuButton(
-                onClick = onOpenDrawer,
-                modifier = Modifier
-                    .padding(top = 32.dp)
-            )
+
         }
 
 

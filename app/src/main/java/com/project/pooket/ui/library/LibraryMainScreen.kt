@@ -50,6 +50,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.project.pooket.ui.common.DrawerIconButton
 import com.project.pooket.ui.library.composable.BookGridItem
 import com.project.pooket.ui.library.composable.BookListItem
 import com.project.pooket.ui.library.composable.ContinueReadingCard
@@ -97,13 +98,7 @@ fun LibraryMainScreen(
             TopAppBar(
                 title = { Text("") },
                 navigationIcon = {
-                    IconButton(onClick = onOpenDrawer) {
-                        Icon(
-                            Icons.Filled.CatchingPokemon,
-                            "Menu",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
+                    DrawerIconButton(onOpenDrawer)
                 },
                 actions = {
                     IconButton(onClick = viewModel::onChangeViewMode) {

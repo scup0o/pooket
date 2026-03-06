@@ -6,13 +6,20 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import com.project.pooket.ui.common.DrawerIconButton
 
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("UnusedMaterial3ScaffoldPaddingParameter")
 @Composable
-fun SearchMainScreen() {
+fun SearchMainScreen(onOpenDrawer : () -> Unit) {
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Search") }) }
-    ) {
+        topBar = {
+            TopAppBar(
+                title = { Text("") },
+                navigationIcon = { DrawerIconButton(onOpenDrawer) }
+            )
+        }
+    ){
+
     }
 }

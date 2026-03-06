@@ -17,8 +17,10 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.project.pooket.core.GlobalViewModel
+import com.project.pooket.ui.collection.CollectionMainScreen
 import com.project.pooket.ui.library.LibraryMainScreen
 import com.project.pooket.ui.reader.ReaderScreen
+import com.project.pooket.ui.search.SearchMainScreen
 import com.project.pooket.ui.setting.SettingMainScreen
 import kotlinx.coroutines.launch
 
@@ -79,14 +81,10 @@ fun AppRouting(
                     LibraryMainScreen(onOpenDrawer = { navManager.openDrawer() })
                 }
                 composable(AppRoute.Collection.route) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("Collection Screen Placeholder")
-                    }
+                    CollectionMainScreen(onOpenDrawer = {navManager.openDrawer()})
                 }
                 composable(AppRoute.Search.route) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("Search Screen Placeholder")
-                    }
+                    SearchMainScreen(onOpenDrawer = {navManager.openDrawer()})
                 }
                 composable(AppRoute.Setting.route) {
                     SettingMainScreen(
