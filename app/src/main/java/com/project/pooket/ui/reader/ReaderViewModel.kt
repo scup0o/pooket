@@ -40,17 +40,60 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import nl.siegmann.epublib.epub.EpubReader
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.TextNode
-import java.io.ByteArrayOutputStream
-import java.io.OutputStreamWriter
-import java.util.concurrent.ConcurrentHashMap
+import java.io.InputStream
+import java.io.InterruptedIOException
 import javax.inject.Inject
 import kotlin.math.abs
 import kotlin.math.sqrt
+
+private class NullWriter : java.io.Writer() {
+    override fun write(cbuf: CharArray, off: Int, len: Int) {}
+    override fun write(c: Int) {}
+    override fun write(str: String) {}
+    override fun write(str: String, off: Int, len: Int) {}
+    override fun flush() {}
+    override fun close() {}
+}
+
+class CoroutineInterruptibleInputStream(
+    private val base: InputStream,
+    private val job: Job
+) : InputStream() {
+    private fun checkActive() {
+        if (!job.isActive) throw InterruptedIOException("Coroutine cancelled")
+    }
+
+    override fun read(): Int {
+        checkActive()
+        return base.read()
+    }
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+        checkActive()
+        return base.read(b, off, len)
+    }
+
+    override fun skip(n: Long): Long {
+        checkActive()
+        return base.skip(n)
+    }
+
+    override fun available(): Int {
+        checkActive()
+        return base.available()
+    }
+
+    override fun close() {
+        base.close()
+    }
+}
 
 enum class DragHandle { NONE, START, END }
 private val WHITESPACE_REGEX = "\\s+".toRegex()
@@ -72,6 +115,8 @@ class ReaderViewModel @Inject constructor(
     private var pdDocument: PDDocument? = null
     private var saveJob: Job? = null
     private var loadingJob: Job? = null
+
+    private var sharedPdfTextStripper: PDFTextStripper? = null
 
     // EPUB specific state
     private val _isEpub = MutableStateFlow(false)
@@ -133,9 +178,16 @@ class ReaderViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
 
     // cache
-    private val bitmapCache = object : LruCache<Int, Bitmap>((Runtime.getRuntime().maxMemory() / 1024 / 8).toInt()) {
+    private val bitmapCache = object : LruCache<Int, Bitmap>((Runtime.getRuntime().maxMemory() / 1024 / 4).toInt()) {
         override fun sizeOf(key: Int, value: Bitmap): Int = value.byteCount / 1024
 
+        override fun entryRemoved(evicted: Boolean, key: Int?, oldValue: Bitmap?, newValue: Bitmap?) {
+            if (oldValue != null && !oldValue.isRecycled) {
+                oldValue.recycle()
+            }
+        }
+    }
+    private val thumbnailCache = object : LruCache<Int, Bitmap>(100) {
         override fun entryRemoved(evicted: Boolean, key: Int?, oldValue: Bitmap?, newValue: Bitmap?) {
             if (oldValue != null && !oldValue.isRecycled) {
                 oldValue.recycle()
@@ -156,6 +208,7 @@ class ReaderViewModel @Inject constructor(
         saveJob?.cancel()
 
         bitmapCache.evictAll()
+        thumbnailCache.evictAll()
         textCache.evictAll()
         pageCharsCache.evictAll()
 
@@ -169,6 +222,10 @@ class ReaderViewModel @Inject constructor(
 
     private fun cleanupResources() {
         CoroutineScope(Dispatchers.IO).launch {
+            try { pdDocument?.close() } catch (e: Exception) {}
+            pdDocument = null
+            sharedPdfTextStripper = null
+
             try {
                 withTimeout(2000) {
                     renderMutex.withLock {
@@ -177,31 +234,34 @@ class ReaderViewModel @Inject constructor(
                         fileDescriptor?.close()
                         fileDescriptor = null
                     }
-                    pdfBoxMutex.withLock {
-                        pdDocument?.close()
-                        pdDocument = null
-                    }
                 }
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Log.e("ReaderVM", "Cleanup timed out or failed", e)
             }
         }
     }
 
-    private suspend fun ensurePdDocumentLoaded(): PDDocument? {
-        if (_isEpub.value) return null
+    private suspend fun ensurePdDocumentLoaded(): PDDocument? = withContext(Dispatchers.IO) {
+        if (_isEpub.value) return@withContext null
 
         if (pdDocument == null && currentBookUri != null) {
             try {
                 val uri = currentBookUri!!.toUri()
-                app.contentResolver.openInputStream(uri)?.use { inputStream ->
-                    pdDocument = PDDocument.load(inputStream, MemoryUsageSetting.setupTempFileOnly())
+                val rawStream = app.contentResolver.openInputStream(uri)
+                val job = coroutineContext[Job]!!
+                val stream = rawStream?.let { CoroutineInterruptibleInputStream(it, job) }
+
+                stream?.use {
+                    pdDocument = PDDocument.load(it, MemoryUsageSetting.setupTempFileOnly())
                 }
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                if (e is InterruptedIOException) throw CancellationException("Stream interrupted", e)
                 Log.e("ReaderVM", "Direct PDFBox load failed", e)
             }
         }
-        return pdDocument
+        return@withContext pdDocument
     }
 
     fun loadBook(uriString: String) {
@@ -224,7 +284,7 @@ class ReaderViewModel @Inject constructor(
                 _fontSize.value = book?.fontSize ?: 16f
                 localIsCompleted = book?.isCompleted == true
 
-                val uri = Uri.parse(uriString)
+                val uri = uriString.toUri()
                 val mimeType = app.contentResolver.getType(uri) ?: ""
 
                 if (mimeType == "application/pdf" || uriString.endsWith(".pdf", true)) {
@@ -247,6 +307,7 @@ class ReaderViewModel @Inject constructor(
                     repository.initTotalPages(uriString, currentTotal)
                 }
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Log.e("ReaderVM", "Direct load failed", e)
                 _isLoading.value = false
             }
@@ -254,6 +315,10 @@ class ReaderViewModel @Inject constructor(
     }
 
     private suspend fun performFullCleanup() {
+        try { pdDocument?.close() } catch (e: Exception) {}
+        pdDocument = null
+        sharedPdfTextStripper = null
+
         renderMutex.withLock {
             pdfBoxMutex.withLock {
                 try {
@@ -261,11 +326,24 @@ class ReaderViewModel @Inject constructor(
                     _pdfRenderer.value = null
                     fileDescriptor?.close()
                     fileDescriptor = null
-                    pdDocument?.close()
-                    pdDocument = null
-                } catch (e: Exception) { Log.e("ReaderVM", "Cleanup error", e) }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    Log.e("ReaderVM", "Cleanup error", e)
+                }
             }
         }
+
+        bitmapCache.evictAll()
+        thumbnailCache.evictAll()
+        textCache.evictAll()
+        pageCharsCache.evictAll()
+
+        val images = _epubImages.value.values.toList()
+        _epubImages.value = emptyMap()
+        images.forEach { if (!it.isRecycled) it.recycle() }
+
+        epubChapters = emptyList()
+        epubPages = emptyList()
     }
 
     private suspend fun loadPdfInternal(uri: Uri) {
@@ -292,14 +370,22 @@ class ReaderViewModel @Inject constructor(
     }
 
     private suspend fun loadEpubInternal(uri: Uri) = withContext(Dispatchers.IO) {
-        val stream = app.contentResolver.openInputStream(uri) ?: throw Exception("Cannot open EPUB")
-        val book = EpubReader().readEpub(stream)
+        val rawStream = app.contentResolver.openInputStream(uri) ?: throw Exception("Cannot open EPUB")
+        val job = coroutineContext[Job]!!
+        val stream = CoroutineInterruptibleInputStream(rawStream, job)
+
+        val book = try {
+            EpubReader().readEpub(stream)
+        } finally {
+            try { stream.close() } catch (e: Exception) {}
+        }
 
         val images = mutableMapOf<String, Bitmap>()
 
         try {
             book.resources.resourceMap.forEach { (path, res) ->
                 ensureActive()
+                yield()
 
                 if (res.mediaType.toString().startsWith("image/")) {
                     try {
@@ -307,7 +393,7 @@ class ReaderViewModel @Inject constructor(
                         val options = BitmapFactory.Options().apply {
                             inJustDecodeBounds = true
                             BitmapFactory.decodeByteArray(data, 0, data.size, this)
-                            inSampleSize = calculateInSampleSize(this, 1080, 1920)
+                            inSampleSize = calculateInSampleSize(this, 540, 960)
                             inJustDecodeBounds = false
                             inPreferredConfig = Bitmap.Config.RGB_565
                         }
@@ -318,50 +404,60 @@ class ReaderViewModel @Inject constructor(
                             val filename = path.substringAfterLast("/")
                             if (filename != path) images[filename] = bitmap
                         }
-                    } catch (e: Exception) { }
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                    }
                 }
             }
 
             _epubImages.value = images
 
-            val chapters = mutableListOf<AnnotatedString>()
-            book.spine.spineReferences.forEach { ref ->
-                ensureActive()
-                try {
-                    val html = String(ref.resource.data, Charsets.UTF_8)
-                    val doc = Jsoup.parse(html)
+            val maxConcurrentParsers = Semaphore(8)
+            val chapters = withContext(Dispatchers.Default) {
+                book.spine.spineReferences.map { ref ->
+                    async {
+                        maxConcurrentParsers.withPermit {
+                            ensureActive()
+                            try {
+                                val html = String(ref.resource.data, Charsets.UTF_8)
+                                val doc = Jsoup.parse(html)
 
-                    doc.select("title, head, script, style, nav, audio, video").remove()
-                    doc.select("img").forEach { img ->
-                        val src = img.attr("src")
-                        val filename = src.substringAfterLast("/")
-                        img.replaceWith(TextNode("[IMAGE:$filename]"))
+                                doc.select("title, head, script, style, nav, audio, video").remove()
+                                doc.select("img").forEach { img ->
+                                    val src = img.attr("src")
+                                    val filename = src.substringAfterLast("/")
+                                    img.replaceWith(TextNode("[IMAGE:$filename]"))
+                                }
+
+                                val settings = Document.OutputSettings()
+                                settings.prettyPrint(false)
+                                doc.outputSettings(settings)
+
+                                doc.select("br").before("\\n")
+                                doc.select("p").before("\\n")
+                                doc.select("h1, h2, h3, h4, h5, h6").before("\\n\\n")
+
+                                val cleanText = doc.body().text().replace("\\n", "\n").trim()
+
+                                val hasImage = cleanText.contains("[IMAGE:")
+                                val isJunk = !hasImage && (cleanText.isEmpty() || (cleanText.length < 20))
+
+                                if (!isJunk) AnnotatedString(cleanText) else null
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                Log.e("ReaderVM", "Error processing EPUB chapter", e)
+                                null
+                            }
+                        }
                     }
-
-                    val settings = Document.OutputSettings()
-                    settings.prettyPrint(false)
-                    doc.outputSettings(settings)
-
-                    doc.select("br").before("\\n")
-                    doc.select("p").before("\\n")
-                    doc.select("h1, h2, h3, h4, h5, h6").before("\\n\\n")
-
-                    val cleanText = doc.body().text().replace("\\n", "\n").trim() ?: ""
-
-                    val hasImage = cleanText.contains("[IMAGE:")
-
-                    val isJunk = !hasImage && (cleanText.isEmpty() || (cleanText.length < 20))
-
-                    if (!isJunk) {
-                        chapters.add(AnnotatedString(cleanText))
-                    }
-                } catch (e: Exception) {
-                    Log.e("ReaderVM", "Error processing EPUB chapter", e)
-                }
+                }.awaitAll().filterNotNull()
             }
 
-            epubChapters = chapters} catch (e: CancellationException) {
-            images.values.forEach { it.recycle() }
+            epubChapters = chapters
+        } catch (e: Exception) {
+            images.values.forEach { if (!it.isRecycled) it.recycle() }
+            if (e is CancellationException) throw e
+            if (e is InterruptedIOException) throw CancellationException("Cancelled", e)
             throw e
         }
     }
@@ -423,6 +519,8 @@ class ReaderViewModel @Inject constructor(
 
                 while (chunkStart < content.length) {
                     ensureActive()
+                    yield()
+
                     var chunkEnd = minOf(chunkStart + maxChunkSize, content.length)
                     if (chunkEnd < content.length) {
                         while (chunkEnd > chunkStart && !content[chunkEnd].isWhitespace()) {
@@ -474,16 +572,23 @@ class ReaderViewModel @Inject constructor(
         return chapter.subSequence(vPage.startOffset, vPage.endOffset)
     }
 
-    suspend fun renderPage(index: Int): Bitmap? = withContext(Dispatchers.Default) {
+    suspend fun renderPage(index: Int, isThumbnail: Boolean = false): Bitmap? = withContext(Dispatchers.Default) {
         if (_isEpub.value) return@withContext null
 
         val renderer = _pdfRenderer.value ?: return@withContext null
-        bitmapCache.get(index)?.let { return@withContext it }
+
+        if (isThumbnail) {
+            thumbnailCache.get(index)?.let { return@withContext it }
+        } else {
+            bitmapCache.get(index)?.let { return@withContext it }
+        }
+
         ensureActive()
 
         renderMutex.withLock {
             ensureActive()
-            bitmapCache.get(index)?.let { return@withLock it }
+            if (isThumbnail) thumbnailCache.get(index)?.let { return@withLock it }
+            else bitmapCache.get(index)?.let { return@withLock it }
 
             var page: PdfRenderer.Page? = null
             try {
@@ -491,25 +596,28 @@ class ReaderViewModel @Inject constructor(
 
                 val displayMetrics = app.resources.displayMetrics
                 val screenWidth = displayMetrics.widthPixels
-                val densityMult = if (displayMetrics.density > 2) 1.5f else 2.0f
-                val targetWidth = (screenWidth * densityMult).toInt()
-                val targetHeight = (targetWidth.toFloat() / page.width * page.height).toInt()
+
+                val densityMult = if (isThumbnail) 0.25f else 1.2f
+                val targetWidth = (screenWidth * densityMult).toInt().coerceAtLeast(1)
+                val targetHeight = (targetWidth.toFloat() / page.width * page.height).toInt().coerceAtLeast(1)
 
                 val bitmap = createBitmap(targetWidth, targetHeight)
                 bitmap.eraseColor(android.graphics.Color.WHITE)
 
                 page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                bitmapCache.put(index, bitmap)
+
+                if (isThumbnail) thumbnailCache.put(index, bitmap)
+                else bitmapCache.put(index, bitmap)
+
                 bitmap
             } catch (e: Exception) {
-                Log.e("ReaderVM", "Error rendering page $index", e)
+                if (e is CancellationException) throw e
                 null
             } finally {
                 page?.close()
             }
         }
     }
-
 
     suspend fun extractText(index: Int): String = withContext(Dispatchers.IO) {
         if (_isEpub.value) {
@@ -528,15 +636,15 @@ class ReaderViewModel @Inject constructor(
 
             try {
                 val doc = pdDocument ?: return@withLock ""
-                val stripper = PDFTextStripper().apply {
-                    startPage = index + 1
-                    endPage = index + 1
-                    sortByPosition = true
 
+                val stripper = sharedPdfTextStripper ?: PDFTextStripper().apply {
+                    sortByPosition = true
                     averageCharTolerance = 0.6f
                     spacingTolerance = 0.5f
-                }
+                }.also { sharedPdfTextStripper = it }
 
+                stripper.startPage = index + 1
+                stripper.endPage = index + 1
                 val rawText = stripper.getText(doc)
 
                 var text = java.text.Normalizer.normalize(rawText, java.text.Normalizer.Form.NFKC)
@@ -546,11 +654,14 @@ class ReaderViewModel @Inject constructor(
                 if (text.isNotEmpty()) textCache.put(index, text)
                 text
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                if (!isActive) throw CancellationException("Cancelled during text extraction", e)
                 Log.e("ReaderVM", "Text extraction failed", e)
                 ""
             }
         }
     }
+
     private fun processReflow(input: String): String {
         val lines = input.split(LINE_BREAK_REGEX)
         val result = StringBuilder()
@@ -641,8 +752,6 @@ class ReaderViewModel @Inject constructor(
             repository.saveFontSize(uri, _fontSize.value)
             if (_isEpub.value) {
                 triggerEpubPagination(pageIndex)
-
-
             }
         }
     }
@@ -741,6 +850,7 @@ class ReaderViewModel @Inject constructor(
 
         pageCharsCache.get(pageIndex)?.let { return@withContext it }
         pdfBoxMutex.withLock {
+            ensureActive()
             pageCharsCache.get(pageIndex)?.let { return@withLock it }
 
             try {
@@ -753,13 +863,15 @@ class ReaderViewModel @Inject constructor(
                 stripper.startPage = pageIndex + 1
                 stripper.endPage = pageIndex + 1
 
-                stripper.writeText(doc, OutputStreamWriter(ByteArrayOutputStream()))
+                stripper.writeText(doc, NullWriter())
 
                 val chars = stripper.chars
                 pageCharsCache.put(pageIndex, chars)
 
                 chars
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                if (!isActive) throw CancellationException("Cancelled during char parsing", e)
                 Log.e("ReaderVM", "Error parsing chars for page $pageIndex", e)
                 emptyList()
             }
@@ -825,7 +937,6 @@ class ReaderViewModel @Inject constructor(
         }
         emptyList()
     }
-
 
     fun onLongPress(pageIndex: Int, touchPoint: Offset, viewSize: Size) {
         if (_isEpub.value || _isTextMode.value) return
@@ -1047,11 +1158,9 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun getNoteTextBounds(rawText: String, note: NoteEntity): Pair<Int, Int>? {
-        // If it has exact bounds (created in Text/Epub mode), use them
         if (note.textRangeStart != null && note.textRangeEnd != null) {
             return note.textRangeStart to note.textRangeEnd
         }
-        // If bounds are null (created in Image mode), fall back to fuzzy finding
         return findFuzzyBounds(rawText, note.originalText)
     }
 }

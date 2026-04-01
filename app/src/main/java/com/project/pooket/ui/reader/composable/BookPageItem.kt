@@ -258,7 +258,23 @@ private fun PdfImagePage(
     pageNotes: List<NoteEntity>,
     onNoteClick: (String) -> Unit
 ) {
-    val bitmap by produceState<Bitmap?>(null, pageIndex) { value = viewModel.renderPage(pageIndex) }
+    val bitmap by produceState<Bitmap?>(null, pageIndex) {
+        value = viewModel.renderPage(pageIndex, isThumbnail = true)
+
+        kotlinx.coroutines.delay(150)
+
+        value = viewModel.renderPage(pageIndex, isThumbnail = false)
+    }
+
+    if (bitmap == null) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(400.dp)
+                .background(if (isNightMode) Color.Black else Color.White)
+        )
+        return
+    }
     val selectionState by viewModel.selectionState.collectAsStateWithLifecycle()
     val noteRectsMap by produceState<Map<Long, List<NormRect>>>(emptyMap(), pageNotes) {
         value = withContext(Dispatchers.Default) { pageNotes.associate { it.id to viewModel.getRectsForNote(it) } }
